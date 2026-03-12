@@ -1,0 +1,5 @@
+# PyCharm IDE files
+.idea/
+*.iml
+*.iws
+*.ipr
