@@ -326,6 +326,8 @@ try {
     Initialize-Rclone -SkipInstall:$SkipRcloneInstall
 
     $baseUrl = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/$RepoBranch/Sync%20Scripts"
+    # Cache-buster to bypass GitHub CDN on repeated installs
+    $cacheBuster = "?v=$(Get-Date -UFormat %s)"
     $files = @(
         @{ Source = 'Launch-Runner.ps1'; Required = $true; Target = 'Launch-Runner.ps1' },
         @{ Source = 'src/Run-RcloneJobs.ps1'; Required = $true; Target = 'src/Run-RcloneJobs.ps1' },
@@ -344,7 +346,7 @@ try {
             continue
         }
 
-        $url = "$baseUrl/$($file.Source)"
+        $url = "$baseUrl/$($file.Source)$cacheBuster"
         Write-Info "Downloading $($file.Source)"
         try {
             $targetDir = Split-Path -Parent $targetPath
@@ -363,7 +365,7 @@ try {
     }
 
     $configPath = Join-Path $InstallPath 'backup-jobs.json'
-    $configUrl = "$baseUrl/backup-jobs.json"
+    $configUrl = "$baseUrl/backup-jobs.json$cacheBuster"
     Initialize-ConfigFile -ConfigPath $configPath -ConfigUrl $configUrl -Mode $selectedConfigMode -Overwrite:$overwriteExisting
 
     Initialize-RcloneRemote
