@@ -1,114 +1,138 @@
 # Rclone Backup Job Runner
 
-PowerShell-based backup runner for rclone with two execution modes:
+A PowerShell-based rclone backup runner with two execution modes: **scheduled/manual run** and **real-time monitor mode** triggered by folder changes.
 
-- Scheduled or manual run mode
-- Monitor mode for near real-time syncing based on folder changes
+**Features at a glance:** internet check before sync · global mutex to prevent overlapping runs · rate-limit detection with backoff · config-driven jobs with per-job intervals · structured logging for operations, errors, resources, and outcomes
 
-The runner provides:
-
-- Internet availability check before sync execution
-- Global process lock (mutex) to prevent overlapping runs
-- Rate-limit detection and backoff handling
-- Config-driven jobs with per-job intervals
-- Structured logging for operations, errors, resources, and job outcomes
+---
 
 ## Table of Contents
 
 - [Quick Start](#quick-start)
-- [One-Command Setup (iex irm)](#one-command-setup-iex-irm)
-- [Configuration Guide](#configuration-guide)
-- [Job Configuration Helper](#job-configuration-helper)
-- [Monitor Mode (Real-Time Syncing)](#monitor-mode-real-time-syncing)
+- [Configuration](#configuration)
+- [Monitor Mode](#monitor-mode)
 - [Execution Flow](#execution-flow)
 - [Logging](#logging)
-- [Usage](#usage)
+- [CLI Reference](#cli-reference)
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
-- [Documentation References](#documentation-references)
-- [Notes](#notes)
+
+---
 
 ## Quick Start
 
-### One-Command Setup (iex irm)
-
-Run this in PowerShell to download dependencies, validate environment, and bootstrap setup:
+### Option A — One-Command Setup
 
 ```powershell
 irm https://raw.githubusercontent.com/ruZeph/Nexus/main/Sync%20Scripts/quick-start.ps1 | iex
 ```
 
-What the quick-start script handles:
+The setup script will:
 
-- PowerShell version validation
-- rclone presence check and installation attempt (winget/choco)
-- setup file download with retries
-- blank config generation by default (does not copy repository config)
-- built-in interactive setup menu for multi-choice options
-- existing config protection (unless force overwrite)
-- rclone remote existence check
-- optional launch of interactive job configuration helper
-- clear success/failure messages with non-zero exit on fatal errors
+- Validate PowerShell version and rclone installation (installs via winget/choco if missing)
+- Download all runner files with retries
+- Generate a blank `backup-jobs.json` (won't overwrite an existing one unless you choose to)
+- Verify your rclone remote exists
+- Offer an interactive menu to finalize configuration
 
-Install location behavior:
+**Setup menu options:**
 
-- asks for install path in interactive shells
-- uses current folder as default when no path is provided
-- accepts relative paths (resolved from current folder)
-- creates and reuses a consistent layout in the selected folder
+| # | Option |
+|---|--------|
+| 1 | Use the repository sample config (default is blank) |
+| 2 | Launch the job configuration helper after setup |
+| 3 | Overwrite existing setup files / config |
 
-Folder layout created by setup:
+**Installed layout:**
 
-```text
-<install-path>
-|-- Launch-Runner.ps1
-|-- src/
-|   `-- Run-RcloneJobs.ps1
-|-- tools/
-|   |-- Test-RcloneJobs.ps1
-|   `-- New-RcloneJobConfig.ps1
-|-- backup-jobs.json
-|-- README.md
-`-- logs/
+```
+<install-path>/
+├── Launch-Runner.ps1
+├── backup-jobs.json
+├── README.md
+├── src/
+│   └── Run-RcloneJobs.ps1
+├── tools/
+│   ├── New-RcloneJobConfig.ps1
+│   └── Test-RcloneJobs.ps1
+└── logs/
 ```
 
-Setup menu options:
+### Option B — Manual Setup
 
-```text
-1) Use repository sample config (default is blank config)
-2) Launch job configuration helper after setup
-3) Overwrite existing setup files/config
-```
+1. Install **PowerShell 5.1+** or **PowerShell 7+**
+2. Install **rclone** and add it to PATH
+3. Configure a remote: `rclone config`
+4. Verify: `rclone version`
+5. Edit `backup-jobs.json` (see [Configuration](#configuration))
 
-To copy repository sample config, select option `1` in the setup menu.
-
-Optional direct invocation form:
+### First Run
 
 ```powershell
-iex "& { $(irm 'https://raw.githubusercontent.com/ruZeph/Nexus/main/Sync%20Scripts/quick-start.ps1') }"
+# Validate config and preview commands — no files transferred
+.\Launch-Runner.ps1 -Mode dryrun
+
+# Run jobs once
+.\Launch-Runner.ps1 -Mode run
+
+# Start real-time monitor
+.\Launch-Runner.ps1 -Mode monitor -IdleTimeSeconds 10
 ```
 
-### 1. Install Requirements
+---
 
-1. Install PowerShell 5.1+ or PowerShell 7+.
-2. Install rclone and ensure it is on PATH.
-3. Configure at least one rclone remote:
+## Configuration
 
-   ```powershell
-   rclone config
-   ```
+Jobs are defined in `backup-jobs.json`. Use the helper tool or edit manually.
 
-4. Verify installation:
+### Job Configuration Helper
 
-   ```powershell
-   rclone version
-   ```
+**Interactive (recommended for first-time setup):**
 
-### 2. Configure Jobs
+```powershell
+.\tools\New-RcloneJobConfig.ps1 -ConfigPath .\backup-jobs.json -Interactive
+```
 
-Edit backup-jobs.json.
+**Non-interactive (for scripting):**
 
-Minimal example:
+```powershell
+.\tools\New-RcloneJobConfig.ps1 `
+  -ConfigPath .\backup-jobs.json `
+  -JobName    documents-backup `
+  -Source     C:/path/to/documents `
+  -Dest       remote:backup/documents `
+  -PresetName default `
+  -Interval   60
+```
+
+**Helper arguments:**
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `-ConfigPath` | No | Config file path (default: `./backup-jobs.json`) |
+| `-JobName` | Yes* | Unique job name |
+| `-Source` | Yes* | Local source folder (must exist) |
+| `-Dest` | Yes* | rclone destination in `remote:path` format |
+| `-PresetName` | No | Profile to assign or auto-create |
+| `-Operation` | No | Override operation: `copy` or `sync` |
+| `-Interval` | No | Seconds between runs |
+| `-Disabled` | No | Create the job in disabled state |
+| `-Force` | No | Overwrite an existing job with the same name |
+
+*Required in non-interactive mode.
+
+**Validation the helper enforces:**
+- Source path must exist; stored as resolved absolute path
+- Destination must be `remote:path` and remote must appear in `rclone listremotes`
+- Job name: letters, numbers, `.` `_` `-` only
+- Interval must be a non-negative integer
+- Duplicate names require `-Force`
+
+---
+
+### Config Schema
+
+#### Minimal example
 
 ```json
 {
@@ -117,18 +141,12 @@ Minimal example:
     "defaultOperation": "sync",
     "logRetentionCount": 10,
     "jobIntervalSeconds": 30,
-    "defaultExtraArgs": [
-      "--retries", "15",
-      "--retries-sleep", "30s"
-    ]
+    "defaultExtraArgs": ["--retries", "15", "--retries-sleep", "30s"]
   },
   "profiles": {
     "default": {
       "operation": "sync",
-      "extraArgs": [
-        "--fast-list",
-        "--transfers", "8"
-      ]
+      "extraArgs": ["--fast-list", "--transfers", "8"]
     }
   },
   "jobs": [
@@ -144,193 +162,78 @@ Minimal example:
 }
 ```
 
-### 3. Dry Run
+#### `settings`
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Launch-Runner.ps1 -Mode dryrun
-```
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `continueOnJobError` | boolean | `true` | Keep running remaining jobs if one fails |
+| `defaultOperation` | string | `sync` | `copy` or `sync` |
+| `logRetentionCount` | integer | `10` | Log files retained per job |
+| `jobIntervalSeconds` | integer | `0` | Global delay between jobs in run mode |
+| `defaultExtraArgs` | string or string[] | — | Appended to every rclone call |
 
-### 4. Run Once
+#### `profiles`
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Launch-Runner.ps1 -Mode run
-```
-
-### 5. Start Monitor Mode
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Launch-Runner.ps1 -Mode monitor -IdleTimeSeconds 10
-```
-
-## Configuration Guide
-
-This section documents the configuration schema actually consumed by the runner.
-
-### Job Configuration Helper
-
-Use New-RcloneJobConfig.ps1 to create or update backup-jobs.json safely.
-
-#### Interactive Mode
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\New-RcloneJobConfig.ps1 -ConfigPath .\backup-jobs.json -Interactive
-```
-
-Interactive mode includes:
-
-- required input prompts for job name/source/dest
-- source directory existence validation
-- destination format validation (remote:path)
-- operation validation (copy or sync)
-- interval and enabled-state prompts
-- auto-create missing profile with safe defaults
-- replace protection unless force is provided
-
-#### Non-Interactive Mode
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\New-RcloneJobConfig.ps1 `
-  -ConfigPath .\backup-jobs.json `
-  -JobName documents-backup `
-  -Source C:/path/to/documents `
-  -Dest remote:backup/documents `
-  -PresetName default `
-  -Interval 60
-```
-
-Non-interactive arguments:
-
-| Argument | Required | Description |
-| --- | --- | --- |
-| -ConfigPath | No | Target config file path (default: ./backup-jobs.json) |
-| -JobName | Yes* | Job name for add/update |
-| -Source | Yes* | Existing local source folder |
-| -Dest | Yes* | rclone destination in remote:path format |
-| -PresetName | No | Profile name to assign/create |
-| -Operation | No | copy or sync override |
-| -Interval | No | Interval in seconds |
-| -Disabled | No | Create/update job as disabled |
-| -Force | No | Overwrite existing job with same name |
-
-*Required in non-interactive mode.
-
-#### How Quick Start Uses The Helper
-
-- quick-start.ps1 downloads New-RcloneJobConfig.ps1 into tools/
-- it can launch the helper interactively during setup
-- this ensures first-run config is validated before execution
-
-#### Validation Rules Enforced By Helper
-
-- source path must exist and is stored as resolved absolute path
-- destination must be remote:path and remote must exist in rclone listremotes
-- job name allows only letters, numbers, dot, underscore, and hyphen
-- interval must be a non-negative integer
-- duplicate job names require -Force to replace
-
-### Root Structure
-
-| Key | Type | Description |
-| --- | --- | --- |
-| settings | object | Global runner behavior and defaults |
-| profiles | object | Reusable rclone operation/argument presets |
-| jobs | array | List of backup job definitions |
-
-### settings
-
-| Field | Type | Required | Default | Notes |
-| --- | --- | --- | --- | --- |
-| continueOnJobError | boolean | No | true | Continue processing remaining jobs when one fails |
-| defaultOperation | string | No | sync | Allowed values: copy, sync |
-| logRetentionCount | integer | No | 10 | Number of log files retained per job |
-| jobIntervalSeconds | integer | No | 0 | Global delay between jobs in run mode |
-| defaultExtraArgs | string or string[] | No | empty | Appended to every rclone invocation |
-
-### profiles
-
-Object keyed by profile name.
-
-| Field | Type | Required | Notes |
-| --- | --- | --- | --- |
-| operation | string | No | Allowed values: copy, sync |
-| extraArgs | string or string[] | No | Profile-level additional rclone args |
-
-Example:
+Named presets for reusable rclone argument sets:
 
 ```json
-{
-  "profiles": {
-    "docs-small-files": {
-      "operation": "sync",
-      "extraArgs": [
-        "--transfers", "6",
-        "--checkers", "12",
-        "--drive-chunk-size", "16M"
-      ]
-    }
+"profiles": {
+  "docs-small-files": {
+    "operation": "sync",
+    "extraArgs": ["--transfers", "6", "--checkers", "12", "--drive-chunk-size", "16M"]
+  },
+  "large-backups": {
+    "operation": "sync",
+    "extraArgs": ["--transfers", "8", "--checkers", "4", "--drive-chunk-size", "32M", "--checksum"]
   }
 }
 ```
 
-### jobs[]
+#### `jobs[]`
 
-| Field | Type | Required | Default | Notes |
-| --- | --- | --- | --- | --- |
-| name | string | Yes | n/a | Must be unique among enabled jobs |
-| source | string | Yes | n/a | Local source directory |
-| dest | string | Yes | n/a | Must match remote:path |
-| enabled | boolean | No | true | Disabled jobs are skipped |
-| profile | string | No | empty | Must exist in profiles if provided |
-| operation | string | No | resolved | Overrides profile/settings operation |
-| interval | integer | No | settings.jobIntervalSeconds | Seconds applied before next job |
-| logRetentionCount | integer | No | settings.logRetentionCount | Per-job log retention override |
-| extraArgs | string or string[] | No | empty | Appended after defaults/profile args |
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | — | Must be unique among enabled jobs |
+| `source` | string | Yes | — | Local source directory |
+| `dest` | string | Yes | — | `remote:path` format |
+| `enabled` | boolean | No | `true` | Disabled jobs are skipped |
+| `profile` | string | No | — | Must exist in `profiles` if set |
+| `operation` | string | No | resolved | Overrides profile/settings operation |
+| `interval` | integer | No | `settings.jobIntervalSeconds` | Seconds before next job |
+| `logRetentionCount` | integer | No | `settings.logRetentionCount` | Per-job log retention override |
+| `extraArgs` | string or string[] | No | — | Appended after defaults and profile args |
 
-### Field Behavior And Precedence
+#### Precedence rules
 
-Operation resolution order:
+**Operation** (highest → lowest):
 
-1. CLI -Operation
-2. jobs[].operation
-3. profiles.<name>.operation
-4. settings.defaultOperation
-5. sync
+```
+CLI -Operation → jobs[].operation → profiles.<name>.operation → settings.defaultOperation → sync
+```
 
-Argument merge order:
+**Extra arguments** (merged in order):
 
-1. settings.defaultExtraArgs
-2. profiles.<name>.extraArgs
-3. jobs[].extraArgs
-4. --dry-run (when CLI switch is used)
+```
+settings.defaultExtraArgs → profiles.<name>.extraArgs → jobs[].extraArgs → --dry-run (if CLI flag set)
+```
 
-Precedence summary:
+**Interval** (run mode): `jobs[].interval` → `settings.jobIntervalSeconds` → no delay
 
-| Concern | Highest Priority | Fallback Chain |
-| --- | --- | --- |
-| Operation | CLI -Operation | jobs[].operation -> profiles.<name>.operation -> settings.defaultOperation -> sync |
-| Extra args | jobs[].extraArgs is appended last | settings.defaultExtraArgs -> profiles.<name>.extraArgs -> jobs[].extraArgs |
-| Interval | jobs[].interval | settings.jobIntervalSeconds |
-
-Interval behavior in run mode:
-
-- The wait before a job is derived from the previous job interval.
-- Per-job jobs[].interval is used first.
-- If missing, settings.jobIntervalSeconds is used.
-- If both are 0, no delay is inserted.
-
-### Validation Rules
+#### Validation rules
 
 | Rule | Behavior |
-| --- | --- |
-| jobs[] must exist | Runner exits with configuration error |
-| Enabled job names must be unique | Duplicate names are rejected |
-| name/source/dest required per enabled job | Missing fields fail validation |
-| dest format remote:path | Invalid format fails validation |
-| operation values | Only copy or sync are allowed |
-| profile existence | Unknown profile name fails validation |
-| extraArgs typing | Must be string or non-empty string array when provided |
+|------|----------|
+| `jobs[]` must exist | Runner exits with config error |
+| Enabled job names must be unique | Duplicates are rejected |
+| `name`, `source`, `dest` required | Missing fields fail validation |
+| `dest` must match `remote:path` | Invalid format fails validation |
+| `operation` must be `copy` or `sync` | Other values fail validation |
+| `profile` must exist if provided | Unknown profile name fails |
+| `extraArgs` typing | Must be string or non-empty string array |
 
-### Full Example
+---
+
+### Full Config Example
 
 ```json
 {
@@ -349,21 +252,11 @@ Interval behavior in run mode:
   "profiles": {
     "docs-small-files": {
       "operation": "sync",
-      "extraArgs": [
-        "--transfers", "6",
-        "--checkers", "12",
-        "--drive-chunk-size", "16M",
-        "--fast-list"
-      ]
+      "extraArgs": ["--transfers", "6", "--checkers", "12", "--drive-chunk-size", "16M", "--fast-list"]
     },
     "large-backups": {
       "operation": "sync",
-      "extraArgs": [
-        "--transfers", "8",
-        "--checkers", "4",
-        "--drive-chunk-size", "32M",
-        "--checksum"
-      ]
+      "extraArgs": ["--transfers", "8", "--checkers", "4", "--drive-chunk-size", "32M", "--checksum"]
     }
   },
   "jobs": [
@@ -373,9 +266,7 @@ Interval behavior in run mode:
       "profile": "docs-small-files",
       "source": "C:/path/to/documents",
       "dest": "remote:backup/documents",
-      "extraArgs": [
-        "--metadata"
-      ]
+      "extraArgs": ["--metadata"]
     },
     {
       "name": "archive-backup",
@@ -390,159 +281,121 @@ Interval behavior in run mode:
 }
 ```
 
-### Monitor Mode And Configuration
+---
 
-- Monitor mode uses the same jobs[] definitions.
-- Changes are grouped by source path and mapped to matching jobs.
-- No separate monitor-only config block is required.
-- Use the -IdleTimeSeconds CLI flag to tune trigger debounce.
+## Monitor Mode
 
-| Monitor Input | Source |
-| --- | --- |
-| Watched folders | jobs[].source from enabled jobs |
-| Triggered jobs | Folder-to-job mapping built from jobs[] |
-| Debounce | -IdleTimeSeconds CLI flag |
-| Config refresh | Periodic reload of backup-jobs.json |
+Monitor mode keeps a persistent process running and syncs only when files actually change — no polling interval needed.
 
-## Monitor Mode (Real-Time Syncing)
+**How it works:**
 
-Monitor mode uses a hybrid strategy:
+1. `FileSystemWatcher` streams change events from each job's `source` folder
+2. Changes are grouped by source path and debounced by `-IdleTimeSeconds`
+3. Once idle time elapses with no new changes, mapped jobs are deduplicated and executed
+4. `backup-jobs.json` is reloaded periodically — no restart required for config changes
+5. A polling snapshot fallback catches any events the watcher misses
 
-- FileSystemWatcher event stream for immediate change detection
-- Polling snapshot fallback to catch missed events
+```powershell
+.\Launch-Runner.ps1 -Mode monitor -IdleTimeSeconds 10
+```
 
-Trigger behavior:
+**Config inputs used by monitor:**
 
-- Changes are tracked by source folder
-- Sync starts after idle time is reached (IdleTimeSeconds)
-- Mapped jobs for the changed folder are deduplicated before execution
-- Config updates are reloaded periodically without restarting the monitor
+| Input | Source |
+|-------|--------|
+| Watched folders | `jobs[].source` from enabled jobs |
+| Triggered jobs | Folder-to-job mapping built from `jobs[]` |
+| Debounce period | `-IdleTimeSeconds` CLI flag |
+| Config refresh | Periodic reload of `backup-jobs.json` |
 
-Monitor-specific command-line flags:
-
-- -Monitor: enable monitor mode
-- -IdleTimeSeconds: idle debounce period before running jobs
+---
 
 ## Execution Flow
 
-For each run cycle, the high-level order is:
+Each run cycle follows this order:
 
-1. Validate internet connectivity
-2. Acquire global mutex lock
-3. Load and validate configuration
+```
+1. Check internet connectivity
+2. Acquire global mutex lock (exit if another instance is active)
+3. Load and validate backup-jobs.json
 4. Select eligible jobs
-5. Execute sync with retry/backoff policy
-6. Write summary and telemetry logs
+5. Execute rclone sync with retry/backoff policy
+6. Write summary and telemetry to logs
+```
+
+---
 
 ## Logging
 
-Default log directory is logs.
-
-Primary logs:
-
-- runner.log: lifecycle, monitor events, resource telemetry, job results
-- runner-error.log: runtime errors and warnings
-- <job-name>-<date>.log: per-job rclone output
+Log files are written to the `logs/` directory.
 
 | File | Purpose |
-| --- | --- |
-| logs/runner.log | Runner lifecycle, monitor events, resource and job result lines |
-| logs/runner-error.log | Runner-level errors and warnings |
-| logs/<job-name>/<timestamp>.log | Raw rclone output and job status |
+|------|---------|
+| `logs/runner.log` | Lifecycle events, monitor activity, resource telemetry, job results |
+| `logs/runner-error.log` | Runtime errors and warnings |
+| `logs/<job-name>/<timestamp>.log` | Raw rclone output per job run |
 
-Useful queries:
+**Useful queries:**
 
 ```powershell
+# Tail recent activity
 Get-Content logs/runner.log -Tail 100
+
+# Filter by log category
 Select-String -Path logs/runner.log -Pattern "\[RESOURCE\]"
 Select-String -Path logs/runner.log -Pattern "\[RESOURCE WARN\]"
 Select-String -Path logs/runner.log -Pattern "\[JOB RESULT\]"
 ```
 
-## Usage
+---
 
-### Common Commands
+## CLI Reference
+
+All commands use `Launch-Runner.ps1` as the entry point.
 
 | Task | Command |
-| --- | --- |
-| Run eligible jobs | powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 |
-| Force all jobs | powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -Force |
-| Dry-run validation | powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -DryRun |
-| Silent execution | powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -Silent |
-| Custom config path | powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -ConfigPath .\backup-jobs.json |
+|------|---------|
+| Dry run (no transfer) | `.\Launch-Runner.ps1 -Mode dryrun` |
+| Run eligible jobs | `.\Launch-Runner.ps1 -Mode run` |
+| Force all jobs | `.\Launch-Runner.ps1 -Mode run -Force` |
+| Silent (for schedulers) | `.\Launch-Runner.ps1 -Mode run -Silent` |
+| Custom config path | `.\Launch-Runner.ps1 -Mode run -ConfigPath .\backup-jobs.json` |
+| Start monitor | `.\Launch-Runner.ps1 -Mode monitor -IdleTimeSeconds 10` |
 
-```powershell
-# Run all eligible jobs now
-powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1
-
-# Force all jobs regardless of interval
-powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -Force
-
-# Validate config and command construction only
-powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -DryRun
-
-# Silent mode for schedulers
-powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -Silent
-
-# Custom configuration file
-powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -ConfigPath .\backup-jobs.json
-```
-
-### Exit Codes
+**Exit codes:**
 
 | Code | Meaning |
-| --- | --- |
-| 0 | Success |
-| 1 | Runtime failure |
-| 2 | Configuration or validation failure |
+|------|---------|
+| `0` | Success |
+| `1` | Runtime failure |
+| `2` | Configuration or validation failure |
+
+---
 
 ## Testing
 
-Run the test suite:
-
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-RcloneJobs.ps1
+# Full test suite
+.\tools\Test-RcloneJobs.ps1
+
+# Quick smoke tests only
+.\tools\Test-RcloneJobs.ps1 -Quick
 ```
 
-Quick tests:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-RcloneJobs.ps1 -Quick
-```
+---
 
 ## Troubleshooting
 
-### Internet Check Fails
+| Symptom | Check first | Fix |
+|---------|-------------|-----|
+| Internet check fails | ICMP to `8.8.8.8` blocked? | Allow ping in firewall, or modify the connectivity check in the script |
+| Monitor not triggering | Source paths exist? `-Mode monitor` set? | Confirm paths, inspect `logs/runner.log` for watcher startup entries |
+| Frequent rate limits | Transfer/checker counts too high? | Lower `--transfers`/`--checkers` in profile; increase `--retries-sleep` in `defaultExtraArgs` |
+| No job result in log | rclone output not captured? | Ensure per-job log files under `logs/<job-name>/` exist and contain rclone output |
+| "Another instance active" repeatedly | Scheduler firing too often? | Increase trigger interval or ensure runner exits promptly after monitor starts |
 
-- Verify network and DNS access.
-- Verify ICMP ping to 8.8.8.8 is allowed in your environment.
-- If your environment blocks ping, modify the connectivity check in the script.
+---
 
-### Monitor Mode Not Triggering
+> Paths, remotes, and schedules in examples are illustrative — substitute your own values.
 
-- Ensure job source paths exist and are accessible.
-- Confirm the script is running with -Monitor.
-- Check runner.log for watcher startup and change-detection entries.
-
-### Frequent Rate Limits
-
-- Reduce transfers/checkers in profile flags.
-- Increase retries or sleep-related flags in settings.defaultExtraArgs.
-- Stagger heavy jobs or run fewer concurrent syncs.
-
-### Quick Reference
-
-| Problem | Check First | Typical Fix |
-| --- | --- | --- |
-| Internet check fails | ICMP to 8.8.8.8 | Allow ping or adjust connectivity check implementation |
-| Monitor not triggering | Source paths and -Monitor flag | Confirm paths, then inspect logs/runner.log |
-| Frequent throttling | rclone transfer/checker values | Lower concurrency and increase retry/backoff args |
-
-## Documentation References
-
-- awesome-readme collection: [matiassingers/awesome-readme](https://github.com/matiassingers/awesome-readme)
-- readme-best-practices: [jehna/readme-best-practices](https://github.com/jehna/readme-best-practices)
-
-## Notes
-
-This guide is intentionally generic and environment-agnostic. Use paths, remotes, and schedules that match your own setup.
+---
