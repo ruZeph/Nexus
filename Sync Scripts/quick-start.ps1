@@ -5,7 +5,6 @@ param(
     [string]$RepoBranch = 'main',
     [switch]$SkipRcloneInstall,
     [switch]$ConfigureJob,
-    [switch]$CopyRepoConfig,
     [switch]$Force
 )
 
@@ -122,6 +121,46 @@ function Resolve-InstallPath {
     return [System.IO.Path]::GetFullPath($selectedPath)
 }
 
+function Get-SetupSelections {
+    param(
+        [bool]$DefaultRunHelper,
+        [bool]$DefaultForce
+    )
+
+    $selection = [pscustomobject]@{
+        ConfigMode = 'default'
+        RunHelper = $DefaultRunHelper
+        Force = $DefaultForce
+    }
+
+    if (-not [Environment]::UserInteractive) {
+        return $selection
+    }
+
+    Write-Host ''
+    Write-Step 'Setup Options (multi-choice)'
+    Write-Host '  1) Use repository sample config (default is blank config)' -ForegroundColor Gray
+    Write-Host '  2) Launch job configuration helper after setup' -ForegroundColor Gray
+    Write-Host '  3) Overwrite existing setup files/config' -ForegroundColor Gray
+
+    $inputValue = Read-Host 'Select options (comma-separated, Enter for defaults)'
+    if ([string]::IsNullOrWhiteSpace($inputValue)) {
+        return $selection
+    }
+
+    $tokens = @($inputValue -split ',' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    foreach ($token in $tokens) {
+        switch ($token) {
+            '1' { $selection.ConfigMode = 'copy' }
+            '2' { $selection.RunHelper = $true }
+            '3' { $selection.Force = $true }
+            default { Write-Warn "Unknown setup option '$token' ignored." }
+        }
+    }
+
+    return $selection
+}
+
 function Initialize-InstallLayout {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -169,7 +208,7 @@ function Initialize-ConfigFile {
     param(
         [Parameter(Mandatory = $true)][string]$ConfigPath,
         [Parameter(Mandatory = $true)][string]$ConfigUrl,
-        [switch]$CopySample,
+        [ValidateSet('default', 'copy')][string]$Mode = 'default',
         [switch]$Overwrite
     )
 
@@ -178,7 +217,7 @@ function Initialize-ConfigFile {
         return
     }
 
-    if ($CopySample) {
+    if ($Mode -eq 'copy') {
         Write-Info 'Creating config from repository sample (explicitly requested).'
         Invoke-DownloadFile -Uri $ConfigUrl -OutFile $ConfigPath
         Write-Ok "Saved: $ConfigPath"
@@ -284,13 +323,19 @@ try {
         throw "PowerShell 5.1+ is required. Detected: $($PSVersionTable.PSVersion)"
     }
 
+    $selections = Get-SetupSelections -DefaultRunHelper:$ConfigureJob -DefaultForce:$Force
+    $selectedConfigMode = [string]$selections.ConfigMode
+    $runHelper = [bool]$selections.RunHelper
+    $overwriteExisting = [bool]$selections.Force
+
     $InstallPath = Resolve-InstallPath -RequestedPath $InstallPath -PromptUser $true
-    Initialize-InstallLayout -Path $InstallPath -Overwrite:$Force
+    Initialize-InstallLayout -Path $InstallPath -Overwrite:$overwriteExisting
 
     Initialize-Rclone -SkipInstall:$SkipRcloneInstall
 
     $baseUrl = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/$RepoBranch/Sync%20Scripts"
     $files = @(
+        @{ Source = 'Launch-Runner.ps1'; Required = $true; Target = 'Launch-Runner.ps1' },
         @{ Source = 'src/Run-RcloneJobs.ps1'; Required = $true; Target = 'src/Run-RcloneJobs.ps1' },
         @{ Source = 'tools/Test-RcloneJobs.ps1'; Required = $true; Target = 'tools/Test-RcloneJobs.ps1' },
         @{ Source = 'tools/New-RcloneJobConfig.ps1'; Required = $true; Target = 'tools/New-RcloneJobConfig.ps1' },
@@ -302,7 +347,7 @@ try {
         $targetPath = Join-Path $InstallPath $file.Target
         $exists = Test-Path -LiteralPath $targetPath
 
-        if ($exists -and -not $Force) {
+        if ($exists -and -not $overwriteExisting) {
             Write-Info "Keeping existing file: $targetPath"
             continue
         }
@@ -327,13 +372,12 @@ try {
 
     $configPath = Join-Path $InstallPath 'backup-jobs.json'
     $configUrl = "$baseUrl/backup-jobs.json"
-    Initialize-ConfigFile -ConfigPath $configPath -ConfigUrl $configUrl -CopySample:$CopyRepoConfig -Overwrite:$Force
+    Initialize-ConfigFile -ConfigPath $configPath -ConfigUrl $configUrl -Mode $selectedConfigMode -Overwrite:$overwriteExisting
 
     Initialize-RcloneRemote
 
     $helperPath = Join-Path $InstallPath 'tools/New-RcloneJobConfig.ps1'
 
-    $runHelper = $ConfigureJob
     if (-not $runHelper -and [Environment]::UserInteractive) {
         $answer = Read-Host 'Open job configuration helper now? (y/N)'
         if ($answer.Trim().ToLowerInvariant() -in @('y', 'yes')) {
@@ -343,7 +387,7 @@ try {
 
     if ($runHelper) {
         Write-Step 'Launching job configuration helper'
-        & $helperPath -ConfigPath $configPath -Interactive -Force:$Force
+        & $helperPath -ConfigPath $configPath -Interactive -Force:$overwriteExisting
         if ($LASTEXITCODE -ne 0) {
             throw 'Job configuration helper failed.'
         }
@@ -353,8 +397,8 @@ try {
     Write-Host ''
     Write-Host 'Next commands:' -ForegroundColor Cyan
     Write-Host "  cd `"$InstallPath`""
-    Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -DryRun'
-    Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 10'
+    Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File .\Launch-Runner.ps1 -Mode dryrun'
+    Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File .\Launch-Runner.ps1 -Mode monitor -IdleTimeSeconds 10'
     Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\New-RcloneJobConfig.ps1 -ConfigPath .\backup-jobs.json -Interactive'
 }
 catch {

@@ -44,7 +44,7 @@ What the quick-start script handles:
 - rclone presence check and installation attempt (winget/choco)
 - setup file download with retries
 - blank config generation by default (does not copy repository config)
-- optional repository config copy via switch
+- built-in interactive setup menu for multi-choice options
 - existing config protection (unless force overwrite)
 - rclone remote existence check
 - optional launch of interactive job configuration helper
@@ -61,6 +61,7 @@ Folder layout created by setup:
 
 ```text
 <install-path>
+|-- Launch-Runner.ps1
 |-- src/
 |   `-- Run-RcloneJobs.ps1
 |-- tools/
@@ -71,11 +72,15 @@ Folder layout created by setup:
 `-- logs/
 ```
 
-Create config from repository sample only when needed:
+Setup menu options:
 
-```powershell
-iex "& { $(irm 'https://raw.githubusercontent.com/ruZeph/Nexus/main/Sync%20Scripts/quick-start.ps1') } -CopyRepoConfig"
+```text
+1) Use repository sample config (default is blank config)
+2) Launch job configuration helper after setup
+3) Overwrite existing setup files/config
 ```
+
+To copy repository sample config, select option `1` in the setup menu.
 
 Optional direct invocation form:
 
@@ -142,19 +147,19 @@ Minimal example:
 ### 3. Dry Run
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -DryRun
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Launch-Runner.ps1 -Mode dryrun
 ```
 
 ### 4. Run Once
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Launch-Runner.ps1 -Mode run
 ```
 
 ### 5. Start Monitor Mode
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 10
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Launch-Runner.ps1 -Mode monitor -IdleTimeSeconds 10
 ```
 
 ## Configuration Guide
