@@ -1,0 +1,32 @@
+{
+  "jobs": [
+    {
+      "name": "office-docs-backup",
+      "enabled": true,
+      "operation": "copy",
+      "source": "C:\\Users\\Avisek\\Documents\\Office Docs",
+      "dest": "GDrive_Main:Documents/Office_Docs",
+      "extraArgs": [
+        "--transfers", "4",
+        "--checkers", "8",
+        "--fast-list",
+        "--retries", "3",
+        "--retries-sleep", "10s",
+        "--contimeout", "20s",
+        "--timeout", "1m"
+      ]
+    },
+    {
+      "name": "playnite-backup",
+      "enabled": true,
+      "operation": "sync",
+      "source": "C:\\Custom User\\Ludusavi\\PlayniteBackups",
+      "dest": "GDrive_Main:backups/playnite-restic",
+      "extraArgs": [
+        "--transfers", "2",
+        "--checkers", "4",
+        "--fast-list"
+      ]
+    }
+  ]
+}

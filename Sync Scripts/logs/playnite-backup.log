@@ -1,0 +1,41 @@
+[2026-04-12 19:22:54] START operation=sync source=C:\Custom User\Ludusavi\PlayniteBackups dest=GDrive_Main:backups/playnite-restic dryrun=True
+[2026-04-12 19:22:54] FAILED exitcode=1
+[2026-04-12 19:23:07] START operation=sync source=C:\Custom User\Ludusavi\PlayniteBackups dest=GDrive_Main:backups/playnite-restic dryrun=True
+2026/04/12 19:23:10 NOTICE: config: Skipped copy as --dry-run is set (size 155)
+2026/04/12 19:23:10 NOTICE: keys/7b4dacff4847d49f691c4ec1f03bd2c1e1d4e7dbdfc08cce08f6f9be5d02b250: Skipped copy as --dry-run is set (size 464)
+2026/04/12 19:23:10 NOTICE: snapshots/5001f83c97e9c06566e07e249b400f3b5609a98ed1bd57ecb2c7f18ee64de85e: Skipped copy as --dry-run is set (size 817)
+2026/04/12 19:23:10 NOTICE: snapshots/74c3ad7de477290cdc261b1824694bfd906309d52310d3b6881a4b3ae1d6dc64: Skipped copy as --dry-run is set (size 798)
+2026/04/12 19:23:10 NOTICE: snapshots/dd97459ff7c90eeac5c648478bae0d060d4c1896375437b2f0c56bd271450fe1: Skipped copy as --dry-run is set (size 868)
+2026/04/12 19:23:10 NOTICE: snapshots/fc26445f16b1a6d483bcb45336b5c07da6783a7f2a8a670a5856178927b6d5e6: Skipped copy as --dry-run is set (size 875)
+2026/04/12 19:23:10 NOTICE: index/3ec713696a006e7da2c97859510e6a928135a0f6909e1fceb41685e8b9fd0a5c: Skipped copy as --dry-run is set (size 10.114Ki)
+2026/04/12 19:23:10 NOTICE: index/51056c02d599ec15b2d74343ba0013a8b49da8c8792a8a530eae68c0fe0965d2: Skipped copy as --dry-run is set (size 508)
+2026/04/12 19:23:10 NOTICE: index/d26b8e04b090b34b6521f89289e43ca24e487ef2e80d67e438a7978922e08388: Skipped copy as --dry-run is set (size 829)
+2026/04/12 19:23:10 NOTICE: index/e2f62decc1772d349e65245e20d38b43779aeb08cbdf4406e38c69a285a1a78a: Skipped copy as --dry-run is set (size 824)
+2026/04/12 19:23:10 NOTICE: data/3a/3ac468dbd619b6ac3de1dd105242ce21e6114f02112839d9d9d3674d5437dd33: Skipped copy as --dry-run is set (size 8.608Ki)
+2026/04/12 19:23:10 NOTICE: data/47/4743b9d8f4470cebf5ff1921e8a8db5cc560fc93c9e3a23681bb48600c7a1e48: Skipped copy as --dry-run is set (size 16.915Mi)
+2026/04/12 19:23:10 NOTICE: data/54/5493804e3503a343db0660466319ea776591b56bdb0a039aebd640412f0b7bd4: Skipped copy as --dry-run is set (size 16.220Mi)
+2026/04/12 19:23:10 NOTICE: data/72/725700759eaa6f0ff71aa3806c9dc27e53ec5d0cfc6cc909295cbbc655ae761f: Skipped copy as --dry-run is set (size 5.899Ki)
+2026/04/12 19:23:10 NOTICE: data/73/73bf9c50c9de752f8e9df905168b5a9b9b4e0bc0d2080c4ea8f9ae772dda97f3: Skipped copy as --dry-run is set (size 16.259Mi)
+2026/04/12 19:23:10 NOTICE: data/9f/9f2d9e76a647ab4a63bd3903a825f3e249e26a2328902a6f710fc261e37fbedd: Skipped copy as --dry-run is set (size 7.882Ki)
+2026/04/12 19:23:10 NOTICE: data/cc/cccbf2b5abfb05289d298436c5a4fd7d03128a593ac18a586fef22d739f3041f: Skipped copy as --dry-run is set (size 15.754Mi)
+2026/04/12 19:23:10 NOTICE: data/d3/d3f402853107c2477b3da0c32ff9f41bb97f949189e11d2b07d89fb12d899603: Skipped copy as --dry-run is set (size 16.189Mi)
+2026/04/12 19:23:10 NOTICE: data/d9/d984219458f6a507070f72dff1b98823871446947e0116559057ea2ea69771b7: Skipped copy as --dry-run is set (size 7.877Ki)
+2026/04/12 19:23:10 NOTICE: data/db/dbe2885630ed1e9d9d590571d60599190146b904701f3d2ee003ae9914a2873c: Skipped copy as --dry-run is set (size 8.565Ki)
+2026/04/12 19:23:10 NOTICE: data/f9/f936ca4fc04af5ca481870f18750985809fb515f65eed353d2f432600057a768: Skipped copy as --dry-run is set (size 33.466Ki)
+2026/04/12 19:23:10 NOTICE: data/72: Skipped set directory modification time as --dry-run is set
+2026/04/12 19:23:10 NOTICE: data/47: Skipped set directory modification time as --dry-run is set
+2026/04/12 19:23:10 NOTICE: data/73: Skipped set directory modification time as --dry-run is set
+2026/04/12 19:23:10 NOTICE: data/9f: Skipped set directory modification time as --dry-run is set
+2026/04/12 19:23:10 NOTICE: data/cc: Skipped set directory modification time as --dry-run is set
+2026/04/12 19:23:10 NOTICE: data/d3: Skipped set directory modification time as --dry-run is set
+2026/04/12 19:23:10 NOTICE: data/54: Skipped set directory modification time as --dry-run is set
+2026/04/12 19:23:10 NOTICE: data/db: Skipped set directory modification time as --dry-run is set
+2026/04/12 19:23:10 NOTICE: data/d9: Skipped set directory modification time as --dry-run is set
+2026/04/12 19:23:10 NOTICE: data/3a: Skipped set directory modification time as --dry-run is set
+2026/04/12 19:23:10 NOTICE: data/f9: Skipped set directory modification time as --dry-run is set
+2026/04/12 19:23:10 NOTICE: data: Skipped set directory modification time as --dry-run is set
+2026/04/12 19:23:10 NOTICE: keys: Skipped set directory modification time as --dry-run is set
+2026/04/12 19:23:10 NOTICE: index: Skipped set directory modification time as --dry-run is set
+2026/04/12 19:23:10 NOTICE: snapshots: Skipped set directory modification time as --dry-run is set
+2026/04/12 19:23:10 NOTICE:    81.423 MiB / 81.423 MiB, 100%, 0 B/s, ETA -
+[2026-04-12 19:23:10] DONE exitcode=0
