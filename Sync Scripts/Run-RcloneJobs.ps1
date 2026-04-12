@@ -41,6 +41,16 @@ function Write-RunnerLog {
     Write-JobLog -LogFile $runnerLog -Message $Message
 }
 
+function Write-RunnerErrorLog {
+    param(
+        [Parameter(Mandatory = $true)][string]$LogDir,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+
+    $runnerErrorLog = Join-Path $LogDir 'runner-error.log'
+    Write-JobLog -LogFile $runnerErrorLog -Message $Message
+}
+
 function Write-RunnerSessionSeparator {
     param(
         [Parameter(Mandatory = $true)][string]$LogDir
@@ -79,6 +89,25 @@ function Write-RunnerResourceLog {
         $handles = $proc.HandleCount
 
         Write-RunnerLog -LogDir $LogDir -Message "[RESOURCE] context=$Context cpu_pct=$cpuPct working_set_mb=$workingMb private_mb=$privateMb handles=$handles threads=$threads"
+
+        $privateWarnMb = 250
+        $workingWarnMb = 220
+        $handleWarn = 2000
+        $threadWarn = 100
+        $cpuWarn = 80
+
+        $warnings = @()
+        if ($cpuPct -ge $cpuWarn) { $warnings += "cpu_pct=$cpuPct>=$cpuWarn" }
+        if ($workingMb -ge $workingWarnMb) { $warnings += "working_set_mb=$workingMb>=$workingWarnMb" }
+        if ($privateMb -ge $privateWarnMb) { $warnings += "private_mb=$privateMb>=$privateWarnMb" }
+        if ($handles -ge $handleWarn) { $warnings += "handles=$handles>=$handleWarn" }
+        if ($threads -ge $threadWarn) { $warnings += "threads=$threads>=$threadWarn" }
+
+        if ($warnings.Count -gt 0) {
+            $warnMsg = "[RESOURCE WARN] context=$Context $($warnings -join ' ')"
+            Write-RunnerLog -LogDir $LogDir -Message $warnMsg
+            Write-RunnerErrorLog -LogDir $LogDir -Message $warnMsg
+        }
 
         $State['LastSampleTime'] = $now
         $State['LastCpuSeconds'] = $cpuTotalSec
@@ -867,6 +896,11 @@ function Start-FolderMonitoring {
                     Write-RunnerLog -LogDir $LogDir -Message $msg
                     Write-ShellMessage -Message $msg -IsSilent $IsSilent
 
+                    $jobStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+                    $jobExitCode = $null
+                    $jobResult = 'unknown'
+                    $jobError = ''
+
                     # Temporarily release mutex so job can acquire it
                     if ($null -ne $Mutex) {
                         try {
@@ -880,11 +914,31 @@ function Start-FolderMonitoring {
                     try {
                         # Run job via recursive call
                         & $PSCommandPath -JobName $jobName -ConfigPath $ConfigPath -DryRun:$DryRun -Silent:$IsSilent -ErrorAction SilentlyContinue
+                        $jobExitCode = $LASTEXITCODE
+                        if ($null -eq $jobExitCode) {
+                            $jobExitCode = if ($?) { 0 } else { 1 }
+                        }
+                        $jobResult = if ($jobExitCode -eq 0) { 'success' } else { 'failed' }
                     }
                     catch {
+                        $jobResult = 'error'
+                        $jobExitCode = 1
+                        $jobError = $_.Exception.Message
                         Write-RunnerLog -LogDir $LogDir -Message "Error executing job '$jobName': $_"
+                        Write-RunnerErrorLog -LogDir $LogDir -Message "Error executing job '$jobName': $_"
                     }
                     finally {
+                        $jobStopwatch.Stop()
+                        $jobDurationSec = [math]::Round($jobStopwatch.Elapsed.TotalSeconds, 2)
+                        $resultMsg = "[JOB RESULT] name=$jobName result=$jobResult exitcode=$jobExitCode duration_sec=$jobDurationSec trigger_folder=$folder"
+                        if (-not [string]::IsNullOrWhiteSpace($jobError)) {
+                            $resultMsg = "$resultMsg error=$jobError"
+                        }
+                        Write-RunnerLog -LogDir $LogDir -Message $resultMsg
+                        if ($jobResult -ne 'success') {
+                            Write-RunnerErrorLog -LogDir $LogDir -Message $resultMsg
+                        }
+
                         # Re-acquire mutex for continued monitoring
                         if ($null -ne $Mutex) {
                             try {

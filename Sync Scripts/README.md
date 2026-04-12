@@ -750,6 +750,12 @@ Select-String "ERROR" logs\runner.log
 # Search for monitor resource telemetry
 Select-String "\[RESOURCE\]" logs\runner.log
 
+# Search for resource warning thresholds
+Select-String "\[RESOURCE WARN\]" logs\runner.log
+
+# Search for monitor job completion/result summaries
+Select-String "\[JOB RESULT\]" logs\runner.log
+
 # Search for rate limit errors
 Select-String "rate limited" logs\office-docs-backup\*.log
 ```

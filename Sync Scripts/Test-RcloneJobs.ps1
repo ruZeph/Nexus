@@ -184,8 +184,12 @@ function Test-ScriptStructure {
     Write-TestCase "Script has monitor resource telemetry"
     $hasResourceFn = [bool]($content -match 'function Write-RunnerResourceLog')
     $hasResourceLog = [bool]($content -match '\[RESOURCE\]')
+    $hasResourceWarn = [bool]($content -match '\[RESOURCE WARN\]')
+    $hasJobResultLog = [bool]($content -match '\[JOB RESULT\]')
     Assert-True $hasResourceFn "Should have Write-RunnerResourceLog function"
     Assert-True $hasResourceLog "Should log resource telemetry entries"
+    Assert-True $hasResourceWarn "Should log resource warning entries"
+    Assert-True $hasJobResultLog "Should log monitor job result entries"
 }
 
 function Test-ConfigurationExamples {
