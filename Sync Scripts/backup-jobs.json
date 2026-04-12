@@ -32,7 +32,7 @@
       "extraArgs": [
         "--transfers", "8",
         "--checkers", "4",
-        "--drive-chunk-size", "24M",
+        "--drive-chunk-size", "32M",
         "--no-update-modtime",
         "--fast-list",
         "--checksum"

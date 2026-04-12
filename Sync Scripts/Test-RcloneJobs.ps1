@@ -254,6 +254,83 @@ function Test-PerformanceMetrics {
     Assert-True ($sw.ElapsedMilliseconds -lt 60000) "Dry-run should complete in under 60 seconds"
 }
 
+function Test-RealDryRunAllJobs {
+    Write-TestHeader "Integration Test: Real Dry-Run Execution (All Jobs)"
+
+    $cfg = Get-Content -Raw -LiteralPath $testConfig.configPath | ConvertFrom-Json
+    $enabledJobs = @($cfg.jobs | Where-Object { $_.enabled -ne $false })
+
+    Write-TestCase "Execute dry-run for all enabled jobs"
+    Write-Info "Testing $($enabledJobs.Count) enabled jobs with real rclone"
+    
+    foreach ($job in $enabledJobs) {
+        $jobName = $job.name
+        Write-TestCase "Dry-run: $jobName"
+        
+        $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $testConfig.scriptPath -JobName $jobName -DryRun -Silent 2>&1
+        $exitCode = $LASTEXITCODE
+        
+        Write-Info "Job: $jobName | Exit Code: $exitCode"
+        
+        # Check for critical errors
+        $outputText = $output | Out-String
+        $hasCriticalError = $outputText -match 'CRITICAL|chunk size.*power of two|permission denied|not found'
+        
+        if ($hasCriticalError) {
+            Write-Fail "Job '$jobName' has critical rclone error"
+            Write-Info "Error details: $(($output | Select-String 'CRITICAL|chunk size.*power|permission|not found' | Select-Object -First 1).Line)"
+        } else {
+            Write-Pass "Job '$jobName' dry-run completed without critical errors"
+        }
+    }
+}
+
+function Test-ConfigurationConsistency {
+    Write-TestHeader "Integration Test: Configuration Consistency"
+
+    $cfg = Get-Content -Raw -LiteralPath $testConfig.configPath | ConvertFrom-Json
+
+    Write-TestCase "Validate chunk sizes are powers of 2"
+    $validChunkSizes = @(256, 512, 1, 2, 4, 8, 16, 32, 64, 128, 256) # in MB/KB
+    $chunkSizePattern = '(\d+)M|(\d+)K' # Extract numeric chunk sizes
+    
+    foreach ($profile in $cfg.profiles.PSObject.Properties) {
+        $profileName = $profile.Name
+        $extraArgs = $profile.Value.extraArgs
+        
+        if ($extraArgs -and $extraArgs.IndexOf('--drive-chunk-size') -ge 0) {
+            $idx = $extraArgs.IndexOf('--drive-chunk-size')
+            $chunkSize = $extraArgs[$idx + 1]
+            
+            if ($chunkSize -match '(\d+)([MK])') {
+                $size = [int]$matches[1]
+                $unit = $matches[2]
+                
+                # Check if size is power of 2
+                $isPowerOfTwo = ($size -band ($size - 1)) -eq 0
+                
+                if ($isPowerOfTwo) {
+                    Write-Pass "Profile '$profileName': chunk size $chunkSize is valid (power of 2)"
+                } else {
+                    Write-Fail "Profile '$profileName': chunk size $chunkSize is NOT a power of 2"
+                }
+            }
+        }
+    }
+
+    Write-TestCase "Validate job intervals are positive"
+    foreach ($job in $cfg.jobs) {
+        if ($job.PSObject.Properties['interval'] -and $null -ne $job.interval) {
+            $interval = $job.interval
+            if ($interval -gt 0) {
+                Write-Pass "Job '$($job.name)': interval $interval seconds is valid"
+            } else {
+                Write-Fail "Job '$($job.name)': interval $interval is not positive"
+            }
+        }
+    }
+}
+
 # ============================================================
 # PARALLEL TESTS - Concurrent Execution
 # ============================================================
@@ -621,6 +698,8 @@ function Main {
             Test-DryRunMode
             Test-LogFileStructure
             Test-PerformanceMetrics
+            Test-RealDryRunAllJobs
+            Test-ConfigurationConsistency
         }
         'Parallel' {
             Test-MutexLocking
@@ -646,6 +725,8 @@ function Main {
             Test-DryRunMode
             Test-LogFileStructure
             Test-PerformanceMetrics
+            Test-RealDryRunAllJobs
+            Test-ConfigurationConsistency
             
             Test-MutexLocking
             if (-not $QuickTest) {
