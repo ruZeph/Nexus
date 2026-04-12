@@ -8,6 +8,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $mutex = [System.Threading.Mutex]::new($false, 'Global\RcloneBackupRunner')
+$ownsMutex = $false
 
 function Write-JobLog {
     param(
@@ -60,6 +61,7 @@ try {
     if (-not $mutex.WaitOne(0)) {
         exit 0
     }
+    $ownsMutex = $true
 
     if (-not (Test-Path -LiteralPath $ConfigPath)) {
         throw "Config file not found: $ConfigPath"
@@ -114,7 +116,7 @@ try {
 
         Write-JobLog -LogFile $jobLog -Message "START operation=$operation source=$source dest=$dest dryrun=$DryRun"
 
-        $args = @(
+        $rcloneArgs = @(
             $operation,
             $source,
             $dest,
@@ -126,15 +128,15 @@ try {
 
         if ($null -ne $job.extraArgs) {
             foreach ($a in $job.extraArgs) {
-                $args += [string]$a
+                $rcloneArgs += [string]$a
             }
         }
 
         if ($DryRun) {
-            $args += '--dry-run'
+            $rcloneArgs += '--dry-run'
         }
 
-        & $rcloneExe @args
+        & $rcloneExe @rcloneArgs
         $exitCode = $LASTEXITCODE
 
         if ($exitCode -eq 0) {
@@ -153,6 +155,8 @@ catch {
     throw
 }
 finally {
-    try { $mutex.ReleaseMutex() | Out-Null } catch { }
+    if ($ownsMutex) {
+        $mutex.ReleaseMutex() | Out-Null
+    }
     $mutex.Dispose()
 }
