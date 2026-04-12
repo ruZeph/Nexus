@@ -3,12 +3,14 @@
     "continueOnJobError": true,
     "defaultOperation": "sync",
     "logRetentionCount": 10,
+    "jobIntervalSeconds": 30,
     "defaultExtraArgs": [
-      "--retries", "10",
+      "--retries", "15",
       "--retries-sleep", "30s",
       "--contimeout", "30s",
-      "--timeout", "5m",
+      "--timeout", "10m",
       "--drive-acknowledge-abuse",
+      "--cutoff-mode", "cautious",
       "--exclude", "*.ffs_db",
       "--exclude", "*.swp",
       "--exclude", "*.lock"
@@ -18,9 +20,9 @@
     "docs-small-files": {
       "operation": "sync",
       "extraArgs": [
-        "--transfers", "10",
-        "--checkers", "20",
-        "--drive-chunk-size", "32M",
+        "--transfers", "6",
+        "--checkers", "12",
+        "--drive-chunk-size", "16M",
         "--fast-list",
         "--exclude", "~$*"
       ]
@@ -28,9 +30,9 @@
     "playnite-restic": {
       "operation": "sync",
       "extraArgs": [
-        "--transfers", "12",
-        "--checkers", "6",
-        "--drive-chunk-size", "256M",
+        "--transfers", "8",
+        "--checkers", "4",
+        "--drive-chunk-size", "24M",
         "--no-update-modtime",
         "--fast-list",
         "--checksum"
@@ -54,6 +56,7 @@
       "profile": "playnite-restic",
       "source": "C:\\Custom User\\Ludusavi\\PlayniteBackups",
       "dest": "GDrive_Main:backups/playnite-restic",
+      "interval": 60,
       "extraArgs": [
         "--update"
       ]

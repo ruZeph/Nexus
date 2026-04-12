@@ -240,6 +240,19 @@ function ConvertTo-ProcessArgumentString {
     return [string]::Join(' ', $escaped)
 }
 
+function Test-RateLimitError {
+    param(
+        [Parameter(Mandatory = $true)][string]$LogFile
+    )
+
+    if (-not (Test-Path -LiteralPath $LogFile)) {
+        return $false
+    }
+
+    $content = Get-Content -Raw -LiteralPath $LogFile
+    return $content -match '(403|429|TooManyRequests|rate limit|Rate limit exceeded|Throttled)'
+}
+
 function Invoke-RcloneLive {
     param(
         [Parameter(Mandatory = $true)][string]$ExePath,
@@ -335,6 +348,7 @@ try {
     $profiles = Get-ConfigProperty -Object $cfg -Name 'profiles'
     $defaultExtraArgs = ConvertTo-StringArray -Value (Get-ConfigProperty -Object $settings -Name 'defaultExtraArgs') -FieldName 'settings.defaultExtraArgs'
     $defaultLogRetentionCount = ConvertTo-PositiveInt -Value (Get-ConfigProperty -Object $settings -Name 'logRetentionCount') -FieldName 'settings.logRetentionCount' -DefaultValue 10
+    $globalJobInterval = ConvertTo-PositiveInt -Value (Get-ConfigProperty -Object $settings -Name 'jobIntervalSeconds') -FieldName 'settings.jobIntervalSeconds' -DefaultValue 0
 
     $continueOnJobError = $true
     $cfgContinueOnJobError = Get-ConfigProperty -Object $settings -Name 'continueOnJobError'
@@ -369,7 +383,21 @@ try {
         exit 1
     }
 
-    foreach ($job in $jobs) {
+    for ($jobIndex = 0; $jobIndex -lt $jobs.Count; $jobIndex++) {
+        $job = $jobs[$jobIndex]
+        
+        # Add interval between jobs (except before the first job)
+        if ($jobIndex -gt 0) {
+            $prevJob = $jobs[$jobIndex - 1]
+            $prevJobName = [string](Get-ConfigProperty -Object $prevJob -Name 'name')
+            $jobInterval = ConvertTo-PositiveInt -Value (Get-ConfigProperty -Object $prevJob -Name 'interval') -FieldName "jobs.$prevJobName.interval" -DefaultValue $globalJobInterval
+            if ($jobInterval -gt 0) {
+                $msg = "Waiting ${jobInterval}s before next job..."
+                Write-RunnerLog -LogDir $logDir -Message $msg
+                Write-ShellMessage -Message $msg -IsSilent $Silent
+                Start-Sleep -Seconds $jobInterval
+            }
+        }
         $name = [string](Get-ConfigProperty -Object $job -Name 'name')
         $jobLog = $null
 
@@ -438,14 +466,17 @@ try {
             }
 
             $exitCode = Invoke-RcloneLive -ExePath $rcloneExe -Arguments $rcloneArgs -LogFile $jobLog -IsSilent $Silent
+            
+            $isRateLimited = Test-RateLimitError -LogFile $jobLog
 
             if ($exitCode -eq 0) {
                 Write-JobLog -LogFile $jobLog -Message 'DONE exitcode=0'
                 Write-ShellMessage -Message "[$name] DONE exitcode=0" -IsSilent $Silent
             }
             else {
-                Write-JobLog -LogFile $jobLog -Message "FAILED exitcode=$exitCode"
-                Write-ShellMessage -Message "[$name] FAILED exitcode=$exitCode" -IsSilent $Silent
+                $rateLimitMsg = if ($isRateLimited) { ' (rate limited)' } else { '' }
+                Write-JobLog -LogFile $jobLog -Message "FAILED exitcode=$exitCode$rateLimitMsg"
+                Write-ShellMessage -Message "[$name] FAILED exitcode=$exitCode$rateLimitMsg" -IsSilent $Silent
                 if ($FailFast -or (-not $continueOnJobError)) {
                     throw "Job '$name' failed with exit code $exitCode."
                 }
