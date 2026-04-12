@@ -248,138 +248,43 @@ function Invoke-RcloneLive {
         [bool]$IsSilent = $false
     )
 
-    $argumentString = ConvertTo-ProcessArgumentString -Arguments $Arguments
-    $stdoutTemp = [System.IO.Path]::GetTempFileName()
-    $stderrTemp = [System.IO.Path]::GetTempFileName()
-
-    $proc = Start-Process -FilePath $ExePath -ArgumentList $argumentString -NoNewWindow -PassThru `
-        -RedirectStandardOutput $stdoutTemp -RedirectStandardError $stderrTemp
-
-    $stdoutOffset = 0
-    $stderrOffset = 0
-
     try {
-        # Tight polling loop (100ms) for low-latency output
-        while (-not $proc.HasExited) {
-            # Read new stdout bytes
-            if (Test-Path -LiteralPath $stdoutTemp) {
-                $file = [System.IO.File]::Open($stdoutTemp, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-                try {
-                    $fileSize = $file.Length
-                    if ($fileSize -gt $stdoutOffset) {
-                        $buffer = [byte[]]::new($fileSize - $stdoutOffset)
-                        $file.Seek($stdoutOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
-                        $bytesRead = $file.Read($buffer, 0, $buffer.Length)
-                        if ($bytesRead -gt 0) {
-                            $newContent = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $bytesRead)
-                            foreach ($line in @($newContent -split "`n") | Where-Object { $_ -and $_.Trim() }) {
-                                $trimmedLine = $line -replace "`r$"
-                                Add-Content -LiteralPath $LogFile -Value $trimmedLine
-                                if (-not $IsSilent) {
-                                    [Console]::Out.WriteLine($trimmedLine)
-                                    [Console]::Out.Flush()
-                                }
-                            }
-                            $stdoutOffset = $fileSize
-                        }
-                    }
+        # Save and restore ErrorActionPreference to not treat stderr as errors
+        $previousEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        
+        # Use call operator with argument array (more reliable than Invoke-Expression)
+        # The 2>&1 merges stderr with stdout for capturing NOTICE lines
+        if ($IsSilent) {
+            # Silent mode: capture all, log only
+            & $ExePath $Arguments 2>&1 | ForEach-Object {
+                $lineStr = [string]$_
+                if ($lineStr.Trim()) {
+                    Add-Content -LiteralPath $LogFile -Value $lineStr
                 }
-                finally {
-                    $file.Dispose()
-                }
-            }
-
-            # Read new stderr bytes
-            if (Test-Path -LiteralPath $stderrTemp) {
-                $file = [System.IO.File]::Open($stderrTemp, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-                try {
-                    $fileSize = $file.Length
-                    if ($fileSize -gt $stderrOffset) {
-                        $buffer = [byte[]]::new($fileSize - $stderrOffset)
-                        $file.Seek($stderrOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
-                        $bytesRead = $file.Read($buffer, 0, $buffer.Length)
-                        if ($bytesRead -gt 0) {
-                            $newContent = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $bytesRead)
-                            foreach ($line in @($newContent -split "`n") | Where-Object { $_ -and $_.Trim() }) {
-                                $trimmedLine = $line -replace "`r$"
-                                Add-Content -LiteralPath $LogFile -Value $trimmedLine
-                                if (-not $IsSilent) {
-                                    [Console]::Error.WriteLine($trimmedLine)
-                                    [Console]::Error.Flush()
-                                }
-                            }
-                            $stderrOffset = $fileSize
-                        }
-                    }
-                }
-                finally {
-                    $file.Dispose()
-                }
-            }
-
-            Start-Sleep -Milliseconds 100
-        }
-
-        # Final flush to ensure all bytes are read
-        if (Test-Path -LiteralPath $stdoutTemp) {
-            $file = [System.IO.File]::Open($stdoutTemp, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-            try {
-                $fileSize = $file.Length
-                if ($fileSize -gt $stdoutOffset) {
-                    $buffer = [byte[]]::new($fileSize - $stdoutOffset)
-                    $file.Seek($stdoutOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
-                    $bytesRead = $file.Read($buffer, 0, $buffer.Length)
-                    if ($bytesRead -gt 0) {
-                        $newContent = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $bytesRead)
-                        foreach ($line in @($newContent -split "`n") | Where-Object { $_ -and $_.Trim() }) {
-                            $trimmedLine = $line -replace "`r$"
-                            Add-Content -LiteralPath $LogFile -Value $trimmedLine
-                            if (-not $IsSilent) {
-                                [Console]::Out.WriteLine($trimmedLine)
-                                [Console]::Out.Flush()
-                            }
-                        }
-                    }
-                }
-            }
-            finally {
-                $file.Dispose()
             }
         }
-
-        if (Test-Path -LiteralPath $stderrTemp) {
-            $file = [System.IO.File]::Open($stderrTemp, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-            try {
-                $fileSize = $file.Length
-                if ($fileSize -gt $stderrOffset) {
-                    $buffer = [byte[]]::new($fileSize - $stderrOffset)
-                    $file.Seek($stderrOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
-                    $bytesRead = $file.Read($buffer, 0, $buffer.Length)
-                    if ($bytesRead -gt 0) {
-                        $newContent = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $bytesRead)
-                        foreach ($line in @($newContent -split "`n") | Where-Object { $_ -and $_.Trim() }) {
-                            $trimmedLine = $line -replace "`r$"
-                            Add-Content -LiteralPath $LogFile -Value $trimmedLine
-                            if (-not $IsSilent) {
-                                [Console]::Error.WriteLine($trimmedLine)
-                                [Console]::Error.Flush()
-                            }
-                        }
-                    }
+        else {
+            # Live mode: stream to console and log
+            & $ExePath $Arguments 2>&1 | ForEach-Object {
+                $lineStr = [string]$_
+                if ($lineStr.Trim()) {
+                    Write-Host $lineStr
+                    Add-Content -LiteralPath $LogFile -Value $lineStr
                 }
             }
-            finally {
-                $file.Dispose()
-            }
         }
-
-        $proc.Refresh()
-        return [int]$proc.ExitCode
+        
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -eq $null) { $exitCode = 0 }
+        return $exitCode
+    }
+    catch {
+        Write-Error "Rclone execution error: $_"
+        return 1
     }
     finally {
-        Remove-Item -LiteralPath $stdoutTemp -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $stderrTemp -Force -ErrorAction SilentlyContinue
-        $proc.Dispose()
+        $ErrorActionPreference = $previousEAP
     }
 }
 
