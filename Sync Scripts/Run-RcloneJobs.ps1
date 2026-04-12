@@ -70,6 +70,45 @@ function Get-SafeLogName {
     return $safe
 }
 
+function New-JobLogFile {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory = $true)][string]$RootLogDir,
+        [Parameter(Mandatory = $true)][string]$JobSafeName
+    )
+
+    $jobLogDir = Join-Path $RootLogDir $JobSafeName
+    if ($PSCmdlet.ShouldProcess($jobLogDir, 'Create job log directory')) {
+        New-Item -ItemType Directory -Force -Path $jobLogDir | Out-Null
+    }
+
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    return Join-Path $jobLogDir "$stamp.log"
+}
+
+function Remove-OldJobLog {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory = $true)][string]$JobLogDir,
+        [int]$KeepCount = 10
+    )
+
+    if (-not (Test-Path -LiteralPath $JobLogDir)) {
+        return
+    }
+
+    $logFiles = @(Get-ChildItem -LiteralPath $JobLogDir -Filter '*.log' -File | Sort-Object LastWriteTime -Descending)
+    if ($logFiles.Count -le $KeepCount) {
+        return
+    }
+
+    foreach ($stale in $logFiles[$KeepCount..($logFiles.Count - 1)]) {
+        if ($PSCmdlet.ShouldProcess($stale.FullName, 'Remove old job log file')) {
+            Remove-Item -LiteralPath $stale.FullName -Force
+        }
+    }
+}
+
 function Get-ConfigProperty {
     param(
         [AllowNull()][object]$Object,
@@ -172,6 +211,29 @@ function Test-RcloneDestination {
     return $Destination -match '^[^:]+:.+'
 }
 
+function ConvertTo-PositiveInt {
+    param(
+        [AllowNull()][object]$Value,
+        [Parameter(Mandatory = $true)][string]$FieldName,
+        [int]$DefaultValue = 10
+    )
+
+    if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
+        return $DefaultValue
+    }
+
+    $parsed = 0
+    if (-not [int]::TryParse([string]$Value, [ref]$parsed)) {
+        throw "$FieldName must be a positive integer."
+    }
+
+    if ($parsed -lt 1) {
+        throw "$FieldName must be greater than or equal to 1."
+    }
+
+    return $parsed
+}
+
 try {
     $logDir = Join-Path $PSScriptRoot 'logs'
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
@@ -201,6 +263,7 @@ try {
     $settings = Get-ConfigProperty -Object $cfg -Name 'settings'
     $profiles = Get-ConfigProperty -Object $cfg -Name 'profiles'
     $defaultExtraArgs = ConvertTo-StringArray -Value (Get-ConfigProperty -Object $settings -Name 'defaultExtraArgs') -FieldName 'settings.defaultExtraArgs'
+    $defaultLogRetentionCount = ConvertTo-PositiveInt -Value (Get-ConfigProperty -Object $settings -Name 'logRetentionCount') -FieldName 'settings.logRetentionCount' -DefaultValue 10
 
     $continueOnJobError = $true
     $cfgContinueOnJobError = Get-ConfigProperty -Object $settings -Name 'continueOnJobError'
@@ -230,13 +293,18 @@ try {
 
     foreach ($job in $jobs) {
         $name = [string](Get-ConfigProperty -Object $job -Name 'name')
-        $safeName = Get-SafeLogName -Name $name
-        $jobLog = Join-Path $logDir "$safeName.log"
+        $jobLog = $null
 
         try {
             if ([string]::IsNullOrWhiteSpace($name)) {
                 throw 'A job is missing a name.'
             }
+
+            $safeName = Get-SafeLogName -Name $name
+            $jobLog = New-JobLogFile -RootLogDir $logDir -JobSafeName $safeName
+            $jobLogDir = Split-Path -Path $jobLog -Parent
+            $jobLogRetentionCount = ConvertTo-PositiveInt -Value (Get-ConfigProperty -Object $job -Name 'logRetentionCount') -FieldName "jobs.$name.logRetentionCount" -DefaultValue $defaultLogRetentionCount
+            Remove-OldJobLog -JobLogDir $jobLogDir -KeepCount $jobLogRetentionCount
 
             $source = [string](Get-ConfigProperty -Object $job -Name 'source')
             $dest = [string](Get-ConfigProperty -Object $job -Name 'dest')
@@ -304,6 +372,12 @@ try {
             }
         }
         catch {
+            if ($null -eq $jobLog) {
+                $fallbackBaseName = if ([string]::IsNullOrWhiteSpace($name)) { 'job' } else { $name }
+                $fallbackName = Get-SafeLogName -Name $fallbackBaseName
+                $jobLog = New-JobLogFile -RootLogDir $logDir -JobSafeName $fallbackName
+            }
+
             Write-JobLog -LogFile $jobLog -Message "ERROR $($_.Exception.Message)"
             Write-RunnerLog -LogDir $logDir -Message "Job '$name' error: $($_.Exception.Message)"
             if ($FailFast -or (-not $continueOnJobError)) {

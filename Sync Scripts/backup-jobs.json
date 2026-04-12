@@ -2,11 +2,15 @@
   "settings": {
     "continueOnJobError": true,
     "defaultOperation": "sync",
+    "logRetentionCount": 10,
     "defaultExtraArgs": [
       "--retries", "5",
       "--retries-sleep", "15s",
       "--contimeout", "30s",
-      "--timeout", "2m"
+      "--timeout", "2m",
+      "--exclude", "*.ffs_db",
+      "--exclude", "*.swp",
+      "--exclude", "*.lock"
     ]
   },
   "profiles": {
