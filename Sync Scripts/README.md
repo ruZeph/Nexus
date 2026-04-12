@@ -65,7 +65,9 @@ A PowerShell-based automation framework for managing rclone backup jobs with rat
 $action = New-ScheduledTaskAction -Execute "powershell.exe" `
   -Argument "-NoProfile -ExecutionPolicy Bypass -File C:\Path\To\Run-RcloneJobs.ps1 -Silent"
 $trigger = New-ScheduledTaskTrigger -Daily -At 2am
-Register-ScheduledTask -Action $action -Trigger $trigger -TaskName "RcloneBackups" -Description "Automated backup jobs"
+Register-ScheduledTask -Action $action -Trigger $trigger `
+  -TaskName "RcloneBackups" `
+  -Description "Automated backup jobs"
 ```
 
 ---
@@ -503,7 +505,7 @@ Trigger backups automatically when folder changes are detected using RealTimeSyn
 2. **Configure folder monitoring:**
    - Folders to watch: `C:\Custom User\Ludusavi\PlayniteBackups`
    - Idle time: `60` seconds (prevents repeated triggers during rapid changes)
-3. **Set command line to trigger backup:**
+3. **Set command line to trigger backup (with required `-Silent` flag):**
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Run-RcloneJobs.ps1" -JobName "playnite-backup" -Silent
@@ -515,7 +517,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sy
 - `-ExecutionPolicy Bypass` - Allow script execution
 - `-File` - Path to Run-RcloneJobs.ps1
 - `-JobName "playnite-backup"` - Run only playnite-backup job
-- `-Silent` - No console output (recommended for automated triggers)
+- `-Silent` - **REQUIRED** - No console output (mandatory for RealTimeSync automated execution)
 
 **How it works:**
 1. RealTimeSync monitors folder for changes
@@ -525,7 +527,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sy
 5. Files synced to `GDrive_Main:Backups/playnite-restic`
 6. Job completes, waits 60 seconds before next job (interval)
 
-**Alternative commands:**
+**Alternative commands (all with `-Silent` for RealTimeSync):**
 
 ```powershell
 # Run all enabled jobs
@@ -534,13 +536,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sy
 # Run with dry-run (preview only, no transfer)
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Run-RcloneJobs.ps1" -JobName "playnite-backup" -DryRun -Silent
 
-# Run without silent mode (see console output)
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Run-RcloneJobs.ps1" -JobName "playnite-backup"
+# Run different job
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Run-RcloneJobs.ps1" -JobName "office-docs-backup" -Silent
 ```
 
 **Performance Tips:**
+- **`-Silent` flag is MANDATORY for RealTimeSync** - reduces overhead and prevents console window spawning
 - Set idle time to at least 30-60 seconds (prevents excessive triggers)
-- Use `-Silent` flag to reduce overhead
 - Monitor logs in `logs/playnite-backup/` to verify triggers
 - Check `logs/runner.log` for overall execution history
 
