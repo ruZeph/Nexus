@@ -647,8 +647,23 @@ function Test-InternetConnectivityFunction {
     $hasFunction = [bool]($scriptContent -match 'function Test-InternetConnectivity')
     Assert-True $hasFunction "Should have Test-InternetConnectivity function defined"
 
-    # dot-source the script to load functions properly
-    . $testConfig.scriptPath | Out-Null
+    # Define Test-InternetConnectivity locally (extracted from main script) for testing
+    # Do NOT dot-source the main script as it would execute the actual backup jobs!
+    function Test-InternetConnectivity {
+        param(
+            [Parameter(Mandatory = $false)][string]$HostName = '8.8.8.8',
+            [Parameter(Mandatory = $false)][int]$TimeoutMilliseconds = 5000
+        )
+
+        try {
+            $ping = [System.Net.NetworkInformation.Ping]::new()
+            $result = $ping.Send($HostName, $TimeoutMilliseconds)
+            return $result.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
+        }
+        catch {
+            return $false
+        }
+    }
 
     Write-TestCase "Test-InternetConnectivity function returns boolean"
     try {
