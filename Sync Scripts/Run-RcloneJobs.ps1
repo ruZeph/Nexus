@@ -358,8 +358,15 @@ try {
     }
 
     if ($jobs.Count -eq 0) {
-        Write-RunnerLog -LogDir $logDir -Message "No enabled jobs matched filter JobName='$JobName'."
-        exit 0
+        $allJobNames = @($cfg.jobs | Where-Object { $_.enabled -ne $false } | ForEach-Object { $_.name })
+        $msg = "No enabled jobs matched filter JobName='$JobName'."
+        if ($JobName) {
+            $jobList = $allJobNames -join ', '
+            $msg = "Job '$JobName' not found. Available jobs: $jobList"
+        }
+        Write-RunnerLog -LogDir $logDir -Message $msg
+        Write-Host "[ERROR] $msg" -ForegroundColor Red
+        exit 1
     }
 
     foreach ($job in $jobs) {

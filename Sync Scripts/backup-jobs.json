@@ -26,10 +26,11 @@
     "playnite-restic": {
       "operation": "sync",
       "extraArgs": [
-        "--transfers", "2",
-        "--checkers", "4",
+        "--transfers", "1",
+        "--checkers", "2",
+        "--no-update-modtime",
         "--fast-list",
-        "--delete-during"
+        "--checksum"
       ]
     }
   },
