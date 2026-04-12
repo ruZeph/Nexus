@@ -3,3 +3,8 @@
 *.iml
 *.iws
 *.ipr
+
+# logs
+*logs/*
+*/logs/*
+*.log
