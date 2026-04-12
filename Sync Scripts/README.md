@@ -1,6 +1,8 @@
 # Run-RcloneJobs - Automated Backup Orchestration
 
-A PowerShell-based automation framework for managing rclone backup jobs with rate limit protection, intelligent job scheduling, process locking, and comprehensive logging.
+A PowerShell-based automation framework for managing rclone backup jobs with:
+- Rate limit protection and intelligent job scheduling
+- Process locking and comprehensive logging
 
 **Status**: Production-ready | **Tests**: 50+ automated tests | **Coverage**: 100% pass rate
 
