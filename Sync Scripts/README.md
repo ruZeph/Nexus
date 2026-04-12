@@ -1,239 +1,99 @@
-<!-- markdownlint-disable MD013 -->
+# Rclone Backup Job Runner
 
-# Run-RcloneJobs - Automated Backup Orchestration
+PowerShell-based backup runner for rclone with two execution modes:
 
-A PowerShell-based automation framework for managing rclone backup jobs with:
+- Scheduled or manual run mode
+- Monitor mode for near real-time syncing based on folder changes
 
-- Rate limit protection and intelligent job scheduling
-- Process locking and comprehensive logging
+The runner provides:
 
-**Status**: Production-ready | **Tests**: 50+ automated tests | **Coverage**: 100% pass rate
-
----
+- Internet availability check before sync execution
+- Global process lock (mutex) to prevent overlapping runs
+- Rate-limit detection and backoff handling
+- Config-driven jobs with per-job intervals
+- Structured logging for operations, errors, resources, and job outcomes
 
 ## Table of Contents
 
 - [Quick Start](#quick-start)
-- [Features](#features)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Monitor Mode Configuration](#monitor-mode-configuration)
-- [Usage Guide](#usage-guide)
+- [One-Command Setup (iex irm)](#one-command-setup-iex-irm)
+- [Configuration Guide](#configuration-guide)
+- [Job Configuration Helper](#job-configuration-helper)
+- [Monitor Mode (Real-Time Syncing)](#monitor-mode-real-time-syncing)
+- [Execution Flow](#execution-flow)
+- [Logging](#logging)
+- [Usage](#usage)
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
-- [Best Practices](#best-practices)
-
----
+- [Documentation References](#documentation-references)
+- [Notes](#notes)
 
 ## Quick Start
 
-### Prerequisites
+### One-Command Setup (iex irm)
 
-- PowerShell 5.0+ (or PowerShell 7.x)
-- rclone installed and in PATH
-- rclone remote configured (e.g., `GDrive_Main`)
-- `backup-jobs.json` config file
-
-### Run Jobs Immediately
+Run this in PowerShell to download dependencies, validate environment, and bootstrap setup:
 
 ```powershell
-# Run all enabled jobs
-.\Run-RcloneJobs.ps1
-
-# Run specific job
-.\Run-RcloneJobs.ps1 -JobName "office-docs-backup"
-
-# Dry-run mode (test without transferring)
-.\Run-RcloneJobs.ps1 -DryRun
-
-# Silent mode (no console output)
-.\Run-RcloneJobs.ps1 -Silent
+irm https://raw.githubusercontent.com/ruZeph/Nexus/main/Sync%20Scripts/quick-start.ps1 | iex
 ```
 
-### Continuous Folder Monitoring (Core)
+What the quick-start script handles:
+
+- PowerShell version validation
+- rclone presence check and installation attempt (winget/choco)
+- setup file download with retries
+- existing config protection (unless force overwrite)
+- rclone remote existence check
+- optional launch of interactive job configuration helper
+- clear success/failure messages with non-zero exit on fatal errors
+
+Install location behavior:
+
+- asks for install path in interactive shells
+- uses current folder as default when no path is provided
+- accepts relative paths (resolved from current folder)
+- creates and reuses a consistent layout in the selected folder
+
+Folder layout created by setup:
+
+```text
+<install-path>
+|-- Run-RcloneJobs.ps1
+|-- Test-RcloneJobs.ps1
+|-- New-RcloneJobConfig.ps1
+|-- backup-jobs.json
+|-- README.md
+`-- logs/
+```
+
+Optional direct invocation form:
 
 ```powershell
-# Start continuous monitoring - detects all folder changes and triggers jobs automatically
-.\Run-RcloneJobs.ps1 -Monitor -Silent
-
-# Or with custom idle time for testing (default 60 seconds)
-.\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 10
+iex "& { $(irm 'https://raw.githubusercontent.com/ruZeph/Nexus/main/Sync%20Scripts/quick-start.ps1') }"
 ```
 
-**That's it!** The script:
+### 1. Install Requirements
 
-- ✅ Monitors all configured source folders continuously
-- ✅ Auto-detects folder changes internally
-- ✅ Triggers only the matching jobs when idle time reached
-- ✅ Reloads config every 30 seconds (add new jobs without restarting!)
-- ✅ Handles deleted/inaccessible folders gracefully
-- ✅ Uses minimal CPU/memory (top-level folder checks only)
+1. Install PowerShell 5.1+ or PowerShell 7+.
+2. Install rclone and ensure it is on PATH.
+3. Configure at least one rclone remote:
 
-### Run Tests
+   ```powershell
+   rclone config
+   ```
 
-```powershell
-# Run all tests
-.\Test-RcloneJobs.ps1
+4. Verify installation:
 
-# Run unit tests only
-.\Test-RcloneJobs.ps1 -TestSuite Unit
+   ```powershell
+   rclone version
+   ```
 
-# Run with quick mode (fewer parallel instances)
-.\Test-RcloneJobs.ps1 -QuickTest
-```
+### 2. Configure Jobs
 
-### Schedule with Windows Task Scheduler
+Edit backup-jobs.json.
 
-```powershell
-# Create daily scheduled task at 2 AM
-$action = New-ScheduledTaskAction -Execute "powershell.exe" `
-  -Argument "-NoProfile -ExecutionPolicy Bypass -File C:\Path\To\Run-RcloneJobs.ps1 -Silent"
-$trigger = New-ScheduledTaskTrigger -Daily -At 2am
-Register-ScheduledTask -Action $action -Trigger $trigger `
-  -TaskName "RcloneBackups" `
-  -Description "Automated backup jobs"
-```
-
----
-
-## Features
-
-### 1. Continuous Folder Monitoring (Core)
-
-Monitor mode is a built-in core capability for real-time sync triggering.
-
-- Uses FileSystemWatcher for low-latency event detection
-- Uses 5-second snapshot checks as reliability fallback
-- Detects changes using snapshot hashing of top-level items (`Name` + `LastWriteTimeUtc`)
-- Waits for idle time (`-IdleTimeSeconds`, default 60) before triggering jobs
-- Supports dynamic config reload every 30 seconds
-- Handles inaccessible/deleted folders gracefully
-
-**Quick start:**
-
-```powershell
-.\Run-RcloneJobs.ps1 -Monitor -Silent
-```
-
-### 2. Rate Limit Detection And Handling
-
-Automatically detects and logs rclone throttling/rate-limit failures.
-
-- Detects HTTP 403/429 and common throttling messages
-- Marks failures with `(rate limited)` in logs
-- Works with retries, backoff, and job intervals
-
-### 3. Intelligent Job Intervals
-
-Controls delay between job runs to reduce API pressure and avoid bursts.
-
-- Global default interval via `settings.jobIntervalSeconds`
-- Per-job `interval` override support
-
-### 4. Mutex-Based Process Locking
-
-Prevents multiple runner instances from executing concurrently.
-
-- Uses `Global\RcloneBackupRunner`
-- Additional instances exit gracefully
-- Avoids conflicting API calls and log corruption
-
-### 5. Internet Connectivity Check
-
-Validates connectivity before running backup work.
-
-- Pings `8.8.8.8` at startup
-- Exits with clear error when offline
-
-### 6. Comprehensive Logging
-
-Captures job-level and runner-level operational data.
-
-- Job logs: `logs/<job-name>/YYYYMMDD-HHMMSS.log`
-- Runner log: `logs/runner.log`
-- Error log: `logs/runner-error.log`
-- Automatic log retention cleanup
-
-### 7. Flexible JSON Configuration
-
-- Global settings
-- Reusable profiles
-- Per-job overrides
-- Human-readable JSON format
-
-### 8. Error Handling And Resilience
-
-- Continue-on-error behavior for batch runs
-- Fail-fast mode when required
-- Graceful handling for invalid/missing inputs
-- Built-in retry behavior from rclone
-
-### How Monitoring Works
-
-Monitor mode uses a hybrid approach: FileSystemWatcher events plus polling snapshot signatures as fallback.
-
-1. Every 5 seconds, the script scans configured source folders.
-2. It builds a signature from top-level entry names and `LastWriteTimeUtc`.
-3. If the signature changed, the folder is marked as changed.
-4. After idle time is reached, linked jobs are executed.
-5. Monitoring continues and config is reloaded periodically.
-
-This design keeps dependencies low, works consistently with many path types, and avoids reliance on external sync tooling.
-
----
-
-## Installation
-
-### 1. Clone or Download
-
-```powershell
-# Using git
-git clone https://github.com/ruZeph/Nexus.git
-cd "Nexus/Sync Scripts"
-
-# Or download manually
-# Download Run-RcloneJobs.ps1, backup-jobs.json, Test-RcloneJobs.ps1
-```
-
-### 2. Install rclone
-
-```powershell
-# Using chocolatey
-choco install rclone
-
-# Or download from https://rclone.org/downloads/
-```
-
-### 3. Configure rclone Remote
-
-```powershell
-# Launch rclone config wizard
-rclone config
-
-# Name it: GDrive_Main
-# Type: Google Drive
-# Follow authentication flow
-```
-
-### 4. Update Configuration
-
-Edit `backup-jobs.json` with your backup jobs and sources.
-
-### 5. Test Execution
-
-```powershell
-# Test with dry-run first
-.\Run-RcloneJobs.ps1 -DryRun
-
-# Run tests
-.\Test-RcloneJobs.ps1 -TestSuite Unit
-```
-
----
-
-## Configuration
-
-### Complete Configuration Example
+Minimal example:
 
 ```json
 {
@@ -244,84 +104,140 @@ Edit `backup-jobs.json` with your backup jobs and sources.
     "jobIntervalSeconds": 30,
     "defaultExtraArgs": [
       "--retries", "15",
-      "--retries-sleep", "30s",
-      "--contimeout", "30s",
-      "--timeout", "10m",
-      "--drive-acknowledge-abuse",
-      "--cutoff-mode", "cautious",
-      "--exclude", "*.ffs_db",
-      "--exclude", "*.swp",
-      "--exclude", "*.lock"
+      "--retries-sleep", "30s"
     ]
   },
   "profiles": {
-    "docs-small-files": {
+    "default": {
       "operation": "sync",
       "extraArgs": [
-        "--transfers", "6",
-        "--checkers", "12",
-        "--drive-chunk-size", "16M",
         "--fast-list",
-        "--exclude", "~$*"
-      ]
-    },
-    "large-backups": {
-      "operation": "sync",
-      "extraArgs": [
-        "--transfers", "8",
-        "--checkers", "4",
-        "--drive-chunk-size", "32M",
-        "--no-update-modtime",
-        "--fast-list",
-        "--checksum"
+        "--transfers", "8"
       ]
     }
   },
   "jobs": [
     {
-      "name": "office-docs-backup",
+      "name": "documents-backup",
       "enabled": true,
-      "profile": "docs-small-files",
-      "source": "C:\\Users\\Avisek\\Documents\\Office Docs",
-      "dest": "GDrive_Main:Documents/Office_Docs",
-      "extraArgs": [
-        "--metadata"
-      ]
-    },
-    {
-      "name": "playnite-backup",
-      "enabled": true,
-      "profile": "large-backups",
-      "source": "C:\\Custom User\\Ludusavi\\PlayniteBackups",
-      "dest": "GDrive_Main:Backups/playnite-restic",
-      "interval": 60,
-      "logRetentionCount": 5,
-      "extraArgs": [
-        "--update"
-      ]
+      "source": "C:/path/to/local/folder",
+      "dest": "remote:backup/documents",
+      "profile": "default",
+      "interval": 60
     }
   ]
 }
 ```
 
-### Settings Reference
+### 3. Dry Run
 
-| Setting | Type | Description |
-| --------- | ------ | ------------- |
-| `continueOnJobError` | boolean | Continue to next job if one fails (default: true) |
-| `defaultOperation` | string | Operation for all jobs: `sync` or `copy` |
-| `logRetentionCount` | number | Keep last N log files per job (default: 10) |
-| `jobIntervalSeconds` | number | Seconds to wait between jobs (default: 30) |
-| `defaultExtraArgs` | array | Default rclone arguments for all jobs |
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -DryRun
+```
 
-### Profile Reference
+### 4. Run Once
 
-Reusable configurations for common job types.
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1
+```
+
+### 5. Start Monitor Mode
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 10
+```
+
+## Configuration Guide
+
+This section documents the configuration schema actually consumed by the runner.
+
+### Job Configuration Helper
+
+Use New-RcloneJobConfig.ps1 to create or update backup-jobs.json safely.
+
+#### Interactive Mode
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\New-RcloneJobConfig.ps1 -ConfigPath .\backup-jobs.json -Interactive
+```
+
+Interactive mode includes:
+
+- required input prompts for job name/source/dest
+- source directory existence validation
+- destination format validation (remote:path)
+- operation validation (copy or sync)
+- interval and enabled-state prompts
+- auto-create missing profile with safe defaults
+- replace protection unless force is provided
+
+#### Non-Interactive Mode
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\New-RcloneJobConfig.ps1 `
+  -ConfigPath .\backup-jobs.json `
+  -JobName documents-backup `
+  -Source C:/path/to/documents `
+  -Dest remote:backup/documents `
+  -PresetName default `
+  -Interval 60
+```
+
+Non-interactive arguments:
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| -ConfigPath | No | Target config file path (default: ./backup-jobs.json) |
+| -JobName | Yes* | Job name for add/update |
+| -Source | Yes* | Existing local source folder |
+| -Dest | Yes* | rclone destination in remote:path format |
+| -PresetName | No | Profile name to assign/create |
+| -Operation | No | copy or sync override |
+| -Interval | No | Interval in seconds |
+| -Disabled | No | Create/update job as disabled |
+| -Force | No | Overwrite existing job with same name |
+
+*Required in non-interactive mode.
+
+#### How Quick Start Uses The Helper
+
+- quick-start.ps1 downloads New-RcloneJobConfig.ps1
+- it can launch the helper interactively during setup
+- this ensures first-run config is validated before execution
+
+### Root Structure
+
+| Key | Type | Description |
+| --- | --- | --- |
+| settings | object | Global runner behavior and defaults |
+| profiles | object | Reusable rclone operation/argument presets |
+| jobs | array | List of backup job definitions |
+
+### settings
+
+| Field | Type | Required | Default | Notes |
+| --- | --- | --- | --- | --- |
+| continueOnJobError | boolean | No | true | Continue processing remaining jobs when one fails |
+| defaultOperation | string | No | sync | Allowed values: copy, sync |
+| logRetentionCount | integer | No | 10 | Number of log files retained per job |
+| jobIntervalSeconds | integer | No | 0 | Global delay between jobs in run mode |
+| defaultExtraArgs | string or string[] | No | empty | Appended to every rclone invocation |
+
+### profiles
+
+Object keyed by profile name.
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| operation | string | No | Allowed values: copy, sync |
+| extraArgs | string or string[] | No | Profile-level additional rclone args |
+
+Example:
 
 ```json
 {
   "profiles": {
-    "profile-name": {
+    "docs-small-files": {
       "operation": "sync",
       "extraArgs": [
         "--transfers", "6",
@@ -333,47 +249,65 @@ Reusable configurations for common job types.
 }
 ```
 
-### Job Reference
+### jobs[]
 
-Individual backup job definitions.
+| Field | Type | Required | Default | Notes |
+| --- | --- | --- | --- | --- |
+| name | string | Yes | n/a | Must be unique among enabled jobs |
+| source | string | Yes | n/a | Local source directory |
+| dest | string | Yes | n/a | Must match remote:path |
+| enabled | boolean | No | true | Disabled jobs are skipped |
+| profile | string | No | empty | Must exist in profiles if provided |
+| operation | string | No | resolved | Overrides profile/settings operation |
+| interval | integer | No | settings.jobIntervalSeconds | Seconds applied before next job |
+| logRetentionCount | integer | No | settings.logRetentionCount | Per-job log retention override |
+| extraArgs | string or string[] | No | empty | Appended after defaults/profile args |
 
-```json
-{
-  "jobs": [
-    {
-      "name": "unique-job-name",
-      "enabled": true,
-      "profile": "profile-name",
-      "operation": "sync",
-      "source": "C:\\local\\path",
-      "dest": "remote:path/to/backup",
-      "interval": 60,
-      "logRetentionCount": 5,
-      "extraArgs": ["--metadata"]
-    }
-  ]
-}
-```
+### Field Behavior And Precedence
 
-| Job Property | Type | Required | Description |
-| ------------- | ------ | ---------- | ------------- |
-| `name` | string | Yes | Unique job identifier |
-| `enabled` | boolean | No | Enable/disable job (default: true) |
-| `profile` | string | No | Reference to profile (optional) |
-| `operation` | string | No | Override profile operation |
-| `source` | string | Yes | Local source path |
-| `dest` | string | Yes | Destination in format `remote:path` |
-| `interval` | number | No | Override global interval (seconds) |
-| `logRetentionCount` | number | No | Override global retention count |
-| `extraArgs` | array | No | Job-specific rclone arguments |
+Operation resolution order:
 
----
+1. CLI -Operation
+2. jobs[].operation
+3. profiles.<name>.operation
+4. settings.defaultOperation
+5. sync
 
-## Monitor Mode Configuration
+Argument merge order:
 
-### Current Production Setup
+1. settings.defaultExtraArgs
+2. profiles.<name>.extraArgs
+3. jobs[].extraArgs
+4. --dry-run (when CLI switch is used)
 
-The following is the active configuration currently running:
+Precedence summary:
+
+| Concern | Highest Priority | Fallback Chain |
+| --- | --- | --- |
+| Operation | CLI -Operation | jobs[].operation -> profiles.<name>.operation -> settings.defaultOperation -> sync |
+| Extra args | jobs[].extraArgs is appended last | settings.defaultExtraArgs -> profiles.<name>.extraArgs -> jobs[].extraArgs |
+| Interval | jobs[].interval | settings.jobIntervalSeconds |
+
+Interval behavior in run mode:
+
+- The wait before a job is derived from the previous job interval.
+- Per-job jobs[].interval is used first.
+- If missing, settings.jobIntervalSeconds is used.
+- If both are 0, no delay is inserted.
+
+### Validation Rules
+
+| Rule | Behavior |
+| --- | --- |
+| jobs[] must exist | Runner exits with configuration error |
+| Enabled job names must be unique | Duplicate names are rejected |
+| name/source/dest required per enabled job | Missing fields fail validation |
+| dest format remote:path | Invalid format fails validation |
+| operation values | Only copy or sync are allowed |
+| profile existence | Unknown profile name fails validation |
+| extraArgs typing | Must be string or non-empty string array when provided |
+
+### Full Example
 
 ```json
 {
@@ -386,12 +320,7 @@ The following is the active configuration currently running:
       "--retries", "15",
       "--retries-sleep", "30s",
       "--contimeout", "30s",
-      "--timeout", "10m",
-      "--drive-acknowledge-abuse",
-      "--cutoff-mode", "cautious",
-      "--exclude", "*.ffs_db",
-      "--exclude", "*.swp",
-      "--exclude", "*.lock"
+      "--timeout", "10m"
     ]
   },
   "profiles": {
@@ -401,738 +330,196 @@ The following is the active configuration currently running:
         "--transfers", "6",
         "--checkers", "12",
         "--drive-chunk-size", "16M",
-        "--fast-list",
-        "--exclude", "~$*"
+        "--fast-list"
       ]
     },
-    "playnite-restic": {
+    "large-backups": {
       "operation": "sync",
       "extraArgs": [
         "--transfers", "8",
         "--checkers", "4",
         "--drive-chunk-size", "32M",
-        "--no-update-modtime",
-        "--fast-list",
         "--checksum"
       ]
     }
   },
   "jobs": [
     {
-      "name": "office-docs-backup",
+      "name": "documents-backup",
       "enabled": true,
       "profile": "docs-small-files",
-      "source": "C:\\Users\\Avisek\\Documents\\Office Docs",
-      "dest": "GDrive_Main:Documents/Office_Docs",
-      "extraArgs": ["--metadata"]
+      "source": "C:/path/to/documents",
+      "dest": "remote:backup/documents",
+      "extraArgs": [
+        "--metadata"
+      ]
     },
     {
-      "name": "playnite-backup",
+      "name": "archive-backup",
       "enabled": true,
-      "profile": "playnite-restic",
-      "source": "C:\\Custom User\\Ludusavi\\PlayniteBackups",
-      "dest": "GDrive_Main:Backups/playnite-restic",
+      "profile": "large-backups",
+      "source": "C:/path/to/archives",
+      "dest": "remote:backup/archives",
       "interval": 60,
-      "extraArgs": ["--update"]
+      "logRetentionCount": 5
     }
   ]
 }
 ```
 
-### Active Jobs
+### Monitor Mode And Configuration
 
-#### Job 1: office-docs-backup
+- Monitor mode uses the same jobs[] definitions.
+- Changes are grouped by source path and mapped to matching jobs.
+- No separate monitor-only config block is required.
+- Use the -IdleTimeSeconds CLI flag to tune trigger debounce.
 
-- **Source**: `C:\Users\Avisek\Documents\Office Docs`
-- **Destination**: `GDrive_Main:Documents/Office_Docs`
-- **Operation**: Sync (bidirectional mirroring)
-- **Profile**: docs-small-files
-- **Schedule**: Every 30 seconds (global interval)
-- **Chunk Size**: 16M (suitable for files < 100MB)
-- **Parallelism**: 6 transfers, 12 checkers
-- **Features**: Metadata preservation, fast-list, excludes temp files
-- **Log Retention**: 10 files (global default)
+| Monitor Input | Source |
+| --- | --- |
+| Watched folders | jobs[].source from enabled jobs |
+| Triggered jobs | Folder-to-job mapping built from jobs[] |
+| Debounce | -IdleTimeSeconds CLI flag |
+| Config refresh | Periodic reload of backup-jobs.json |
 
-#### Job 2: playnite-backup
+## Monitor Mode (Real-Time Syncing)
 
-- **Source**: `C:\Custom User\Ludusavi\PlayniteBackups`
-- **Destination**: `GDrive_Main:Backups/playnite-restic`
-- **Operation**: Sync
-- **Profile**: playnite-restic
-- **Schedule**: Every 60 seconds (job-specific interval)
-- **Chunk Size**: 32M (suitable for larger archives)
-- **Parallelism**: 8 transfers, 4 checkers
-- **Features**: Checksum verification, preserves modification time, fast-list, update flag
-- **Log Retention**: 10 files (global default)
+Monitor mode uses a hybrid strategy:
 
-### Global Settings Explained
+- FileSystemWatcher event stream for immediate change detection
+- Polling snapshot fallback to catch missed events
 
-| Setting | Current Value | Rationale |
-| --------- | --- | --- |
-| Retries | 15 | Handles temporary Google Drive rate limits |
-| Retry Sleep | 30s | Exponential backoff with 30s base delay |
-| Connection Timeout | 30s | Fails fast on network issues |
-| Overall Timeout | 10m | Prevents hanging transfers |
-| Drive Acknowledge Abuse | Enabled | Acknowledges files flagged by Google |
-| Cutoff Mode | Cautious | Safer incomplete transfer handling |
-| Job Interval | 30s | Prevents API rate limiting |
+Trigger behavior:
 
-### Sync Operation Details
+- Changes are tracked by source folder
+- Sync starts after idle time is reached (IdleTimeSeconds)
+- Mapped jobs for the changed folder are deduplicated before execution
+- Config updates are reloaded periodically without restarting the monitor
 
-**What Sync Does:**
+Monitor-specific command-line flags:
 
-- Ensures destination mirrors source
-- Deletes files from destination not in source (use `copy` to prevent this)
-- Transfers new/modified files from source to destination
-- Bidirectional safety checks
+- -Monitor: enable monitor mode
+- -IdleTimeSeconds: idle debounce period before running jobs
 
-**Profile Tuning:**
+## Execution Flow
 
-| Profile | Use Case | Transfers | Checkers | Chunk Size |
-| --------- | ---------- | ----------- | ---------- | ----------- |
-| docs-small-files | 10-100 files | 6 | 12 | 16M |
-| playnite-restic | Large files/archives | 8 | 4 | 32M |
+For each run cycle, the high-level order is:
 
-**Chunk Size Notes:**
+1. Validate internet connectivity
+2. Acquire global mutex lock
+3. Load and validate configuration
+4. Select eligible jobs
+5. Execute sync with retry/backoff policy
+6. Write summary and telemetry logs
 
-- Must be a power of 2: 1M, 2M, 4M, 8M, 16M, 32M, 64M, 128M, 256M
-- Larger = better for large files, worse for small files
-- Smaller = safer for unreliable connections
+## Logging
 
-### Rate Limiting Protection
+Default log directory is logs.
 
-Active mechanisms preventing rate limit errors:
+Primary logs:
 
-1. **Retry Logic**: 15 automatic retries with exponential backoff
-2. **Job Intervals**: 30-60 second gaps between jobs
-3. **Parallelism Limits**: Balanced transfers/checkers for API quotas
-4. **Drive Acknowledge**: Handles abuse-flagged files gracefully
-5. **Cutoff Mode**: Cautious approach to partial transfers
+- runner.log: lifecycle, monitor events, resource telemetry, job results
+- runner-error.log: runtime errors and warnings
+- <job-name>-<date>.log: per-job rclone output
 
-## Continuous Monitoring (Self-Contained)
+| File | Purpose |
+| --- | --- |
+| logs/runner.log | Runner lifecycle, monitor events, resource and job result lines |
+| logs/runner-error.log | Runner-level errors and warnings |
+| logs/<job-name>/<timestamp>.log | Raw rclone output and job status |
 
-**No external tools required!** The script is now fully self-contained for real-time monitoring. Just run `-Monitor` and it handles everything internally.
-
-### Monitor Mode Overview
-
-The `-Monitor` flag puts the script into continuous monitoring mode:
-
-- **Detects folder changes** using FileSystemWatcher (event-based) with snapshot-diff fallback
-- **Auto-triggers matching jobs** when a folder has been idle for N seconds
-- **Reloads config every 30 seconds** - add/remove jobs on-the-fly without restarting
-- **Logs resource telemetry** every run/start and periodically (`[RESOURCE]` CPU/memory/handles/threads)
-- **Handles edge cases** - deleted folders, permission errors, access issues
-- **Validates security** - path validation, job name sanitization, injection prevention
-- **Production-ready** - mutex locking, comprehensive logging, graceful error recovery
-
-### Quick Start Monitoring
-
-#### Option 1: Run Now (Testing)
+Useful queries:
 
 ```powershell
-# Start monitoring with 10-second idle time for fast testing
-.\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 10
+Get-Content logs/runner.log -Tail 100
+Select-String -Path logs/runner.log -Pattern "\[RESOURCE\]"
+Select-String -Path logs/runner.log -Pattern "\[RESOURCE WARN\]"
+Select-String -Path logs/runner.log -Pattern "\[JOB RESULT\]"
 ```
 
-#### Option 2: Run in Background (Production)
+## Usage
+
+### Common Commands
+
+| Task | Command |
+| --- | --- |
+| Run eligible jobs | powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 |
+| Force all jobs | powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -Force |
+| Dry-run validation | powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -DryRun |
+| Silent execution | powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -Silent |
+| Custom config path | powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -ConfigPath .\backup-jobs.json |
 
 ```powershell
-# Start monitoring in background session with 60-second idle time (default)
-.\Run-RcloneJobs.ps1 -Monitor -Silent
+# Run all eligible jobs now
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1
 
-# Or with longer idle time to avoid rapid re-triggers
-.\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 120 -Silent
-```
+# Force all jobs regardless of interval
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -Force
 
-### How Monitor Mode Works
+# Validate config and command construction only
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -DryRun
 
-1. **Startup**: Script reads config, discovers all monitored folders, takes baseline snapshots
-2. **Watcher + Polling Loop**: Every 5 seconds, checks each folder and consumes watcher events
-3. **Change Detection**: Watcher logs change type/path; snapshot diff acts as reliability fallback
-4. **Idle Waiting**: Waits until the folder has been quiet for the idle time (default 60s)
-5. **Job Trigger**: Only triggers jobs for the specific changed folder
-6. **Config Reload**: Every 30 seconds, reloads config - detects new/removed jobs automatically
-7. **Loop Continues**: Returns to monitoring, never stops until you kill the process
+# Silent mode for schedulers
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -Silent
 
-### Adding/Removing Jobs Without Restarting
-
-Since the monitor reloads config every 30 seconds:
-
-```json
-{
-  "jobs": [
-    {
-      "name": "office-docs-backup",
-      "enabled": true,
-      "source": "C:\\Users\\Avisek\\Documents\\Office Docs",
-      "dest": "GDrive_Main:Documents/Office_Docs",
-      "profile": "docs-small-files"
-    },
-    {
-      "name": "new-folder-backup",
-      "enabled": true,
-      "source": "C:\\Users\\Avisek\\Downloads",
-      "dest": "GDrive_Main:Backups/Downloads",
-      "profile": "docs-small-files"
-    }
-  ]
-}
-```
-
-✅ Monitor automatically detects `new-folder-backup` within 30 seconds and starts monitoring that folder!
-✅ Set `"enabled": false` to stop monitoring a job (also within 30 seconds)
-
-### Running Monitor Mode Continuously
-
-#### Option A: Windows Task Scheduler (Recommended)
-
-Create an automated task to run on startup:
-
-```powershell
-# PowerShell (as Administrator)
-$taskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument @(
-    "-NoProfile",
-    "-ExecutionPolicy Bypass",
-    "-File `"C:\Custom User\Nexus\Sync Scripts\Run-RcloneJobs.ps1`"",
-    "-Monitor",
-    "-Silent"
-)
-
-$taskTrigger = New-ScheduledTaskTrigger -AtStartup
-
-$taskPrincipal = New-ScheduledTaskPrincipal -UserId "$env:COMPUTERNAME\$env:USERNAME" -RunLevel Highest
-
-$taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 5)
-
-$task = New-ScheduledTask -Action $taskAction -Trigger $taskTrigger -Principal $taskPrincipal -Settings $taskSettings -Description "Run monitor-mode backup jobs continuously"
-
-Register-ScheduledTask -TaskName "RcloneJobsMonitor" -InputObject $task -Force
-```
-
-Then verify it's running:
-
-```powershell
-# Check task status
-Get-ScheduledTask -TaskName "RcloneJobsMonitor" | Get-ScheduledTaskInfo
-
-# View logs
-Get-Content "C:\Custom User\Nexus\Sync Scripts\logs\runner.log" -Tail 20
-```
-
-#### Option B: Console Session (Manual, for testing)
-
-Simply run:
-
-```powershell
-cd "C:\Custom User\Nexus\Sync Scripts"
-.\Run-RcloneJobs.ps1 -Monitor -Silent
-```
-
-Keep the PowerShell window open. Monitor will run continuously.
-
-### Performance Characteristics
-
-Monitor mode is designed for minimal resource usage:
-
-- **CPU**: ~1-2% when idle, <5% during change detection
-- **Memory**: ~30-50 MB baseline
-- **Network**: None (local folder polling only)
-- **Polling Strategy**: Top-level directory only, not recursive (for performance)
-- **Frequency**: Every 5 seconds per folder
-
-Memory remains stable because:
-
-- Snapshots use MD5 hash, not full content
-- Only tracks modified folder names + timestamps
-- Garbage collection enabled for stale state objects
-- No file recursion (only checks main folder level)
-
-### Edge Cases Handled
-
-| Scenario | Behavior |
-| --------- | -------- |
-| Folder deleted | Monitor detects after 2 errors, stops watching, removes from state |
-| Permission denied | Logs warning, skips folder for this iteration, retries next cycle |
-| Config file invalid | Logs error, keeps using existing config, retries next reload |
-| New jobs added | Auto-detected within 30 seconds, new folders added to monitoring |
-| Jobs disabled | Config reload detects disabled jobs, removes from monitoring |
-| Job name has invalid chars | Validates and skips, logs warning, doesn't break monitor |
-| Multiple jobs per folder | All jobs queued and executed when idle reached |
-| Config deleted | Continues monitoring existing folders until manually stopped |
-
-### Security Features
-
-- **Path Validation**: Resolves and validates all source paths exist before monitoring
-- **Job Name Sanitization**: Prevents special characters that could break logs: `<>:"|?*\`
-- **Injection Prevention**: Validates all configurable values before use
-- **Mutex Locking**: Only one monitor instance can run at a time
-- **Graceful Failure**: If mutex lost, monitor terminates immediately with error
-- **Error Logging**: All security violations logged to `runner-error.log`
-
----
-
-## Usage Guide
-
-### Command Line Options
-
-```powershell
-.\Run-RcloneJobs.ps1 [options]
-```
-
-| Option | Type | Description |
-| -------- | ------ | ------------- |
-| `-ConfigPath` | string | Path to config JSON (default: ./backup-jobs.json) |
-| `-JobName` | string | Run specific job by name |
-| `-SourceFolder` | string | Run jobs matching this source folder |
-| `-Monitor` | switch | Enable continuous folder monitoring (auto-detect changes, trigger jobs) |
-| `-IdleTimeSeconds` | int | Idle time before triggering jobs (default: 60). Must be 5-3600 seconds. Use with `-Monitor` |
-| `-DryRun` | switch | Test mode, no transfers (use `--dry-run` in rclone) |
-| `-Operation` | string | Override operation: `copy` or `sync` |
-| `-FailFast` | switch | Exit immediately on first error |
-| `-Silent` | switch | No console output |
-
-### Usage Examples
-
-```powershell
-# Run all enabled jobs immediately
-.\Run-RcloneJobs.ps1
-
-# Run specific job only
-.\Run-RcloneJobs.ps1 -JobName "office-docs-backup"
-
-# Dry-run mode (preview changes, no transfer)
-.\Run-RcloneJobs.ps1 -DryRun
-
-# Copy instead of sync (preserve destination files)
-.\Run-RcloneJobs.ps1 -Operation copy
-
-# Exit on first error
-.\Run-RcloneJobs.ps1 -FailFast
-
-# Silent background execution
-.\Run-RcloneJobs.ps1 -Silent
-
-# Custom config file
-.\Run-RcloneJobs.ps1 -ConfigPath "C:\backup\prod-config.json"
-
-# Combination: Specific job, dry-run, silent
-.\Run-RcloneJobs.ps1 -JobName "office-docs-backup" -DryRun -Silent
-
-# Continuous monitoring
-.\Run-RcloneJobs.ps1 -Monitor -Silent
-
-# Monitor mode with custom idle time
-.\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 10 -Silent
-
-# Monitor mode - 2 minute idle time (production)
-.\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 120 -Silent
+# Custom configuration file
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -ConfigPath .\backup-jobs.json
 ```
 
 ### Exit Codes
 
 | Code | Meaning |
-| ------ | --------- |
-| 0 | Success or graceful exit (another instance running) |
-| 1 | Error or job failure (with FailFast enabled) |
-
-### Viewing Logs
-
-```powershell
-# View today's logs for a job
-Get-ChildItem logs\office-docs-backup\*.log -Newer (Get-Date).AddHours(-24)
-
-# View overall runner log
-Get-Content logs\runner.log -Tail 50
-
-# Search for errors
-Select-String "ERROR" logs\runner.log
-
-# Search for monitor resource telemetry
-Select-String "\[RESOURCE\]" logs\runner.log
-
-# Search for resource warning thresholds
-Select-String "\[RESOURCE WARN\]" logs\runner.log
-
-# Search for monitor job completion/result summaries
-Select-String "\[JOB RESULT\]" logs\runner.log
-
-# Search for rate limit errors
-Select-String "rate limited" logs\office-docs-backup\*.log
-```
-
----
+| --- | --- |
+| 0 | Success |
+| 1 | Runtime failure |
+| 2 | Configuration or validation failure |
 
 ## Testing
 
-### Test Suite Overview
-
-**50+ automated tests** covering:
-
-- Unit tests: Core functions and error handling
-- Integration tests: Full script execution
-- Parallel tests: Concurrency and mutex locking
-- Failure tests: Error scenarios and recovery
-
-### Running Tests
+Run the test suite:
 
 ```powershell
-# Run all tests (full suite)
-.\Test-RcloneJobs.ps1
-
-# Run specific test category
-.\Test-RcloneJobs.ps1 -TestSuite Unit
-.\Test-RcloneJobs.ps1 -TestSuite Integration
-.\Test-RcloneJobs.ps1 -TestSuite Parallel
-
-# Quick mode (fewer parallel instances)
-.\Test-RcloneJobs.ps1 -TestSuite Parallel -QuickTest
-
-# Keep test logs for inspection
-.\Test-RcloneJobs.ps1 -Verbose
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Test-RcloneJobs.ps1
 ```
 
-### Test Categories
+Quick tests:
 
-#### Unit Tests (22 tests)
-
-- Configuration parsing and validation
-- JSON format checking
-- Function structure verification
-- Error handling for invalid inputs
-- Special character sanitization
-- Rate limit detection
-- Timeout handling
-
-**Run:** `.\Test-RcloneJobs.ps1 -TestSuite Unit`
-
-#### Integration Tests (7+ tests)
-
-- Dry-run execution
-- Full script validation
-- Log file structure
-- Performance metrics
-- Real dry-run with actual rclone
-- Configuration consistency
-- Chunk size validation
-
-**Run:** `.\Test-RcloneJobs.ps1 -TestSuite Integration`
-
-#### Parallel Tests (3+ test groups)
-
-- Mutex locking verification
-- 3 concurrent instances
-- 5 concurrent load test (2 in quick mode)
-- Process synchronization
-- Race condition detection
-
-**Run:** `.\Test-RcloneJobs.ps1 -TestSuite Parallel`
-
-### Test Results Interpretation
-
-✅ **All Pass (100% expected):**
-
-```text
-Passed:     50+
-Failed:     0
-Pass Rate:  100%
-
-✓ All tests passed!
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Test-RcloneJobs.ps1 -Quick
 ```
-
-✗ **Some Fail:**
-
-- Check specific failure messages
-- Review configuration changes
-- Verify rclone availability
-- Check disk space and permissions
-
-### Expected Performance
-
-| Test Category | Expected Time | Max Acceptable |
-| --------------- | --- | --- |
-| Unit tests | 5-10s | 15s |
-| Integration tests | 20-40s | 60s |
-| Parallel tests | 15-30s | 45s |
-| Full suite | 60-120s | 180s |
-| Quick mode | 30-60s | 90s |
-
----
 
 ## Troubleshooting
 
-### Problem: "Another runner instance is already active"
+### Internet Check Fails
 
-**Cause:** Multiple instances running simultaneously
+- Verify network and DNS access.
+- Verify ICMP ping to 8.8.8.8 is allowed in your environment.
+- If your environment blocks ping, modify the connectivity check in the script.
 
-**Solutions:**
+### Monitor Mode Not Triggering
 
-1. Wait for previous instance to complete
-2. Check Task Scheduler for running task
-3. Check Process Explorer for PowerShell processes
-4. Kill stuck processes: `Stop-Process -Name powershell -Force`
+- Ensure job source paths exist and are accessible.
+- Confirm the script is running with -Monitor.
+- Check runner.log for watcher startup and change-detection entries.
 
-### Problem: Frequent rate limit errors
+### Frequent Rate Limits
 
-**Cause:** API quotas exceeded due to too many requests
+- Reduce transfers/checkers in profile flags.
+- Increase retries or sleep-related flags in settings.defaultExtraArgs.
+- Stagger heavy jobs or run fewer concurrent syncs.
 
-**Solutions:**
+### Quick Reference
 
-1. Increase `jobIntervalSeconds`: `30` → `60` or `90`
-2. Reduce `--transfers` in profiles: `6` → `4` or `3`
-3. Reduce `--checkers`: `12` → `6` or `4`
-4. Schedule jobs at different times
-5. Contact rclone support for quota increases
+| Problem | Check First | Typical Fix |
+| --- | --- | --- |
+| Internet check fails | ICMP to 8.8.8.8 | Allow ping or adjust connectivity check implementation |
+| Monitor not triggering | Source paths and -Monitor flag | Confirm paths, then inspect logs/runner.log |
+| Frequent throttling | rclone transfer/checker values | Lower concurrency and increase retry/backoff args |
 
-**Example fix:**
+## Documentation References
 
-```json
-{
-  "settings": {
-    "jobIntervalSeconds": 60
-  },
-  "profiles": {
-    "docs-small-files": {
-      "extraArgs": ["--transfers", "3", "--checkers", "6"]
-    }
-  }
-}
-```
+- awesome-readme collection: [matiassingers/awesome-readme](https://github.com/matiassingers/awesome-readme)
+- readme-best-practices: [jehna/readme-best-practices](https://github.com/jehna/readme-best-practices)
 
-### Problem: "Invalid chunk size: 24M"
+## Notes
 
-**Cause:** Chunk size must be a power of 2
-
-**Solutions:**
-
-- Valid: 1M, 2M, 4M, 8M, 16M, 32M, 64M, 128M, 256M
-- Invalid: 3M, 5M, 24M, 48M
-
-**Fix:**
-
-```json
-{
-  "profiles": {
-    "profile-name": {
-      "extraArgs": ["--drive-chunk-size", "32M"]
-    }
-  }
-}
-```
-
-### Problem: No internet connection detected
-
-**Cause:** Script checks internet connectivity before running
-
-**Solutions:**
-
-1. Verify internet connection: `ping 8.8.8.8`
-2. Check firewall rules allow ICMP
-3. Verify DNS resolution works
-4. For networks blocking ping, modify check in script
-
-### Problem: Jobs not running on schedule
-
-**Cause:** Task Scheduler issue or bad configuration
-
-**Solutions:**
-
-1. Verify Task Scheduler task exists: `Get-ScheduledTask -TaskName "RcloneBackups"`
-2. Check task history for errors
-3. Verify config file path in task action
-4. Test manual execution: `.\Run-RcloneJobs.ps1`
-5. Check log files for details
-
-### Problem: Disk space exhausted by logs
-
-**Cause:** Log retention not being applied
-
-**Solutions:**
-
-1. Check `logRetentionCount` setting (should be 10 or less)
-2. Manually clean old logs: `Remove-Item logs\* -Recurse -Force`
-3. Set more aggressive retention:
-
-   ```json
-   {"settings": {"logRetentionCount": 5}}
-   ```
-
-4. Verify script has write permissions to logs directory
-
-### Problem: Rclone connection timeout
-
-**Cause:** Network issue or slow Google Drive
-
-**Solutions:**
-
-1. Increase `--timeout`: `"10m"` → `"15m"`
-2. Increase `--contimeout`: `"30s"` → `"60s"`
-3. Verify internet speed and stability
-4. Check rclone logs for specific errors
-5. Try sync during off-peak hours
-
-### Problem: Test suite hangs
-
-**Cause:** Parallel tests or rclone process stuck
-
-**Solutions:**
-
-1. Kill hung processes: `Stop-Process -Name powershell -Force`
-2. Run quick tests: `.\Test-RcloneJobs.ps1 -QuickTest`
-3. Restart PowerShell
-4. Check for resource exhaustion (CPU, memory)
-5. Verify temp directory accessible
-
----
-
-## Best Practices
-
-### Configuration Management
-
-1. **Use profiles** to reduce duplication
-2. **Test with dry-run first** before production
-3. **Set appropriate job intervals** (30-60+ seconds)
-4. **Exclude temporary files** (lock files, cache, etc.)
-5. **Use reasonable chunk sizes** (16M or 32M)
-6. **Log retention** of 5-10 files
-7. **Keep config in version control** (backup-jobs.json)
-
-### Rate Limiting
-
-1. **Start conservative**: Lower transfers/checkers, higher intervals
-2. **Monitor logs** for rate limit indicators
-3. **Gradually increase** parallelism as needed
-4. **Use retries** (15 is good baseline)
-5. **Acknowledge abuse** for Google Drive
-6. **Add delays** between jobs (global + per-job)
-
-### Monitoring & Maintenance
-
-1. **Review logs regularly** for errors or warnings
-2. **Test suite monthly** (`.\Test-RcloneJobs.ps1`)
-3. **Monitor disk usage** (logs directory)
-4. **Keep PowerShell updated**
-5. **Keep rclone updated** (`rclone selfupdate`)
-6. **Document changes** to configuration
-
-### Scheduling
-
-1. **Use Task Scheduler** for reliable automation
-2. **Schedule during low-traffic hours** if possible
-3. **Space jobs out** with appropriate intervals
-4. **Avoid peak times** for cloud services
-5. **Set appropriate job interval** (30-60+ seconds)
-6. **Enable `-Silent` mode** for scheduled tasks
-
-### Error Handling
-
-1. **Set `continueOnJobError: true`** to skip failed jobs
-2. **Use `FailFast` flag** only for critical jobs
-3. **Monitor error logs** for patterns
-4. **Implement alerting** on repeated failures
-5. **Have manual intervention plan** for severe failures
-
----
-
-## Architecture
-
-### Components
-
-- **Run-RcloneJobs.ps1**: Main orchestration script
-- **Test-RcloneJobs.ps1**: Comprehensive test suite
-- **backup-jobs.json**: Configuration file
-
-### Key Functions
-
-| Function | Purpose |
-| ---------- | --------- |
-| `Test-InternetConnectivity` | Verifies internet before running |
-| `Test-RateLimitError` | Detects rate limit errors in logs |
-| `Remove-OldJobLog` | Enforces log retention limits |
-| `Invoke-RcloneLive` | Executes rclone with logging |
-| `Get-ConfigProperty` | Safely retrieves config values |
-
-### Process Flow
-
-```text
-1. Start Run-RcloneJobs.ps1
-2. Acquire mutex lock (exit if already running)
-3. Check internet connectivity (exit if no connection)
-4. Load configuration from JSON
-5. For each enabled job:
-   a. Create log file
-   b. Apply log retention
-   c. Build rclone command
-   d. Execute rclone with live output
-   e. Detect rate limits in output
-   f. Log status (DONE/FAILED)
-   g. Wait for job interval before next job
-6. Release mutex lock
-7. Exit with appropriate code
-```
-
----
-
-## Support & Contribution
-
-### Reporting Issues
-
-1. Check [Troubleshooting](#troubleshooting) section
-2. Run `.\Test-RcloneJobs.ps1` to identify issue area
-3. Include relevant logs from `logs/` directory
-4. Provide configuration (sanitized)
-
-### Contributing
-
-1. Fork repository
-2. Create feature branch: `git checkout -b feature/name`
-3. Make changes on dedicated branch
-4. Run test suite: `.\Test-RcloneJobs.ps1`
-5. Commit with clear messages
-6. Push and create pull request
-
----
-
-## License
-
-Specify your license here (e.g., MIT, Apache 2.0)
-
----
-
-## Changelog
-
-### Version 1.0.0 (Latest)
-
-**Features:**
-
-- ✅ Rate limit detection
-- ✅ Job intervals/cooldown
-- ✅ Mutex process locking
-- ✅ Internet connectivity check
-- ✅ Comprehensive logging with retention
-- ✅ Flexible configuration system
-- ✅ 50+ automated tests
-- ✅ Real dry-run integration tests
-- ✅ Configuration consistency validation
-- ✅ Chunk size power-of-2 validation
-
-**Fixes:**
-
-- ✅ Log retention now properly enforced
-- ✅ Test suite no longer triggers accidental backups
-- ✅ Internet connectivity check runs before operations
-
----
-
-## Version Info
-
-- **Script Version**: 1.0.0
-- **PowerShell**: 5.0+
-- **Rclone**: 1.50+
-- **Last Updated**: April 12, 2026
-- **Branch**: rclone-sync-jobs
-
----
-
-**Questions?** Check logs in `logs/` directory or run tests with `-Verbose` flag.
-
-**Ready to migrate to production?** Test with `-DryRun` first, then schedule with Task Scheduler.
+This guide is intentionally generic and environment-agnostic. Use paths, remotes, and schedules that match your own setup.
