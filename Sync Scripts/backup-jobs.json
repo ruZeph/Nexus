@@ -55,7 +55,7 @@
       "enabled": true,
       "profile": "playnite-restic",
       "source": "C:\\Custom User\\Ludusavi\\PlayniteBackups",
-      "dest": "GDrive_Main:backups/playnite-restic",
+      "dest": "GDrive_Main:Backups/playnite-restic",
       "interval": 60,
       "extraArgs": [
         "--update"
