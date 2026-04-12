@@ -4,10 +4,11 @@
     "defaultOperation": "sync",
     "logRetentionCount": 10,
     "defaultExtraArgs": [
-      "--retries", "5",
-      "--retries-sleep", "15s",
+      "--retries", "10",
+      "--retries-sleep", "30s",
       "--contimeout", "30s",
-      "--timeout", "2m",
+      "--timeout", "5m",
+      "--drive-acknowledge-abuse",
       "--exclude", "*.ffs_db",
       "--exclude", "*.swp",
       "--exclude", "*.lock"
@@ -17,8 +18,9 @@
     "docs-small-files": {
       "operation": "sync",
       "extraArgs": [
-        "--transfers", "8",
-        "--checkers", "16",
+        "--transfers", "10",
+        "--checkers", "20",
+        "--drive-chunk-size", "32M",
         "--fast-list",
         "--exclude", "~$*"
       ]
@@ -26,8 +28,9 @@
     "playnite-restic": {
       "operation": "sync",
       "extraArgs": [
-        "--transfers", "1",
-        "--checkers", "2",
+        "--transfers", "12",
+        "--checkers", "6",
+        "--drive-chunk-size", "256M",
         "--no-update-modtime",
         "--fast-list",
         "--checksum"
