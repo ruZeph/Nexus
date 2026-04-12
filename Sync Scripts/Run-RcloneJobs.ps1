@@ -115,7 +115,6 @@ function New-JobLogFile {
 }
 
 function Remove-OldJobLog {
-    [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory = $true)][string]$JobLogDir,
         [int]$KeepCount = 10
@@ -126,14 +125,16 @@ function Remove-OldJobLog {
     }
 
     $logFiles = @(Get-ChildItem -LiteralPath $JobLogDir -Filter '*.log' -File | Sort-Object LastWriteTime -Descending)
+    
     if ($logFiles.Count -le $KeepCount) {
         return
     }
 
-    foreach ($stale in $logFiles[$KeepCount..($logFiles.Count - 1)]) {
-        if ($PSCmdlet.ShouldProcess($stale.FullName, 'Remove old job log file')) {
-            Remove-Item -LiteralPath $stale.FullName -Force
-        }
+    $toRemoveCount = $logFiles.Count - $KeepCount
+    $toRemove = $logFiles[$KeepCount..($logFiles.Count - 1)]
+    
+    foreach ($stale in $toRemove) {
+        Remove-Item -LiteralPath $stale.FullName -Force -ErrorAction SilentlyContinue
     }
 }
 
