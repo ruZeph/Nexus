@@ -3,6 +3,7 @@ param(
     [string]$JobName,
     [switch]$DryRun,
     [switch]$FailFast,
+    [switch]$Silent,
     [ValidateSet('copy', 'sync')][string]$Operation
 )
 
@@ -30,6 +31,17 @@ function Write-RunnerLog {
 
     $runnerLog = Join-Path $LogDir 'runner.log'
     Write-JobLog -LogFile $runnerLog -Message $Message
+}
+
+function Write-ShellMessage {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [bool]$IsSilent = $false
+    )
+
+    if (-not $IsSilent) {
+        Write-Output $Message
+    }
 }
 
 function Resolve-RcloneExe {
@@ -329,10 +341,12 @@ try {
 
             if (-not (Test-Path -LiteralPath $source)) {
                 Write-JobLog -LogFile $jobLog -Message "SKIP source missing: $source"
+                Write-ShellMessage -Message "[$name] SKIP source missing: $source" -IsSilent $Silent
                 continue
             }
 
             Write-JobLog -LogFile $jobLog -Message "START operation=$operation source=$source dest=$dest profile=$profileName dryrun=$DryRun"
+            Write-ShellMessage -Message "[$name] START operation=$operation dryrun=$DryRun" -IsSilent $Silent
 
             $rcloneArgs = @(
                 $operation,
@@ -358,14 +372,21 @@ try {
                 $rcloneArgs += '--dry-run'
             }
 
-            & $rcloneExe @rcloneArgs
+            if ($Silent) {
+                & $rcloneExe @rcloneArgs *> $null
+            }
+            else {
+                & $rcloneExe @rcloneArgs
+            }
             $exitCode = $LASTEXITCODE
 
             if ($exitCode -eq 0) {
                 Write-JobLog -LogFile $jobLog -Message 'DONE exitcode=0'
+                Write-ShellMessage -Message "[$name] DONE exitcode=0" -IsSilent $Silent
             }
             else {
                 Write-JobLog -LogFile $jobLog -Message "FAILED exitcode=$exitCode"
+                Write-ShellMessage -Message "[$name] FAILED exitcode=$exitCode" -IsSilent $Silent
                 if ($FailFast -or (-not $continueOnJobError)) {
                     throw "Job '$name' failed with exit code $exitCode."
                 }
@@ -380,6 +401,7 @@ try {
 
             Write-JobLog -LogFile $jobLog -Message "ERROR $($_.Exception.Message)"
             Write-RunnerLog -LogDir $logDir -Message "Job '$name' error: $($_.Exception.Message)"
+            Write-ShellMessage -Message "[$name] ERROR $($_.Exception.Message)" -IsSilent $Silent
             if ($FailFast -or (-not $continueOnJobError)) {
                 throw
             }
