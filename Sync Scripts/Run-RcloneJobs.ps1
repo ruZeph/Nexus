@@ -249,42 +249,36 @@ function Invoke-RcloneLive {
     )
 
     try {
-        # Save and restore ErrorActionPreference to not treat stderr as errors
-        $previousEAP = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         
-        # Use call operator with argument array (more reliable than Invoke-Expression)
-        # The 2>&1 merges stderr with stdout for capturing NOTICE lines
         if ($IsSilent) {
-            # Silent mode: capture all, log only
-            & $ExePath $Arguments 2>&1 | ForEach-Object {
-                $lineStr = [string]$_
-                if ($lineStr.Trim()) {
-                    Add-Content -LiteralPath $LogFile -Value $lineStr
-                }
+            # Silent: capture and log only (no console)
+            $output = & $ExePath $Arguments 2>&1
+            $output | ForEach-Object {
+                $line = [string]$_
+                if ($line.Trim()) { Add-Content -Path $LogFile -Value $line }
             }
         }
         else {
-            # Live mode: stream to console and log
-            & $ExePath $Arguments 2>&1 | ForEach-Object {
-                $lineStr = [string]$_
-                if ($lineStr.Trim()) {
-                    Write-Host $lineStr
-                    Add-Content -LiteralPath $LogFile -Value $lineStr
+            # Live: stream to console and log
+            $output = & $ExePath $Arguments 2>&1
+            $output | ForEach-Object {
+                $line = [string]$_
+                if ($line.Trim()) {
+                    Write-Host $line
+                    Add-Content -Path $LogFile -Value $line
                 }
             }
         }
         
-        $exitCode = $LASTEXITCODE
-        if ($exitCode -eq $null) { $exitCode = 0 }
-        return $exitCode
+        return $LASTEXITCODE
     }
     catch {
         Write-Error "Rclone execution error: $_"
         return 1
     }
     finally {
-        $ErrorActionPreference = $previousEAP
+        $ErrorActionPreference = 'Stop'
     }
 }
 
