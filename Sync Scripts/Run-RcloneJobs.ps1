@@ -1,6 +1,8 @@
 param(
     [string]$ConfigPath = (Join-Path $PSScriptRoot 'backup-jobs.json'),
     [string]$JobName,
+    [string]$SourceFolder,
+    [switch]$Monitor,
     [switch]$DryRun,
     [switch]$FailFast,
     [switch]$Silent,
@@ -335,6 +337,110 @@ function ConvertTo-PositiveInt {
     return $parsed
 }
 
+function Start-FolderMonitoring {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)][string]$LogDir,
+        [bool]$IsSilent = $false,
+        [string]$ConfigPath = "",
+        [bool]$DryRun = $false
+    )
+
+    # Build folder-to-jobs mapping
+    $folderJobMap = @{}
+    $watchedFolders = @()
+    
+    foreach ($job in $Config.jobs | Where-Object { $_.enabled -ne $false }) {
+        $source = [string](Get-ConfigProperty -Object $job -Name 'source')
+        $jobName = [string](Get-ConfigProperty -Object $job -Name 'name')
+        
+        if ([string]::IsNullOrWhiteSpace($source)) { continue }
+        
+        try {
+            $resolvedPath = (Resolve-Path -Path $source -ErrorAction SilentlyContinue).ProviderPath
+            if (-not [string]::IsNullOrWhiteSpace($resolvedPath)) {
+                if (-not $folderJobMap.ContainsKey($resolvedPath)) {
+                    $folderJobMap[$resolvedPath] = @()
+                    $watchedFolders += $resolvedPath
+                }
+                $folderJobMap[$resolvedPath] += $jobName
+                $msg = "Monitoring folder: $resolvedPath -> job: $jobName"
+                Write-RunnerLog -LogDir $LogDir -Message $msg
+                Write-ShellMessage -Message $msg -IsSilent $IsSilent
+            }
+        }
+        catch {
+            Write-RunnerLog -LogDir $LogDir -Message "Warning: Cannot monitor folder '$source' for job '$jobName': $_"
+        }
+    }
+
+    if ($watchedFolders.Count -eq 0) {
+        throw "No valid source folders found to monitor."
+    }
+
+    # Track last write time for each folder using Get-ChildItem
+    $lastWriteTime = @{}
+    $idleTimeSeconds = 60
+
+    # Initialize last write times
+    foreach ($folder in $watchedFolders) {
+        $lastWriteTime[$folder] = (Get-Date).AddSeconds(-$idleTimeSeconds - 1)
+    }
+
+    $msg = "Folder monitoring started. Watching $($watchedFolders.Count) folder(s) with ${idleTimeSeconds}s idle time."
+    Write-RunnerLog -LogDir $LogDir -Message $msg
+    Write-ShellMessage -Message $msg -IsSilent $IsSilent
+
+    try {
+        while ($true) {
+            Start-Sleep -Seconds 5
+            $now = Get-Date
+
+            foreach ($folder in $watchedFolders) {
+                # Get newest file/folder modification time in this directory tree
+                $newestItem = Get-ChildItem -Path $folder -Recurse -File -ErrorAction SilentlyContinue |
+                    Sort-Object -Property LastWriteTime -Descending |
+                    Select-Object -First 1
+
+                if ($newestItem) {
+                    $itemTime = $newestItem.LastWriteTime
+                    # If we see a newer item than cached, update the cache  
+                    if ($itemTime -gt $lastWriteTime[$folder]) {
+                        $lastWriteTime[$folder] = $now
+                    }
+                }
+
+                # Check if idle time has elapsed
+                $secsIdle = ($now - $lastWriteTime[$folder]).TotalSeconds
+                
+                if ($secsIdle -ge $idleTimeSeconds) {
+                    # Reset to prevent re-triggering
+                    $lastWriteTime[$folder] = $now
+                    
+                    $jobs = $folderJobMap[$folder]
+                    $msg = "Idle time reached for: $folder. Triggering jobs: $($jobs -join ', ')"
+                    Write-RunnerLog -LogDir $LogDir -Message $msg
+                    Write-ShellMessage -Message $msg -IsSilent $IsSilent
+
+                    # Run the jobs
+                    foreach ($jobName in $jobs) {
+                        $msg = "Executing job: $jobName (triggered by folder: $folder)"
+                        Write-RunnerLog -LogDir $LogDir -Message $msg
+                        Write-ShellMessage -Message $msg -IsSilent $IsSilent
+                        
+                        # Run job via recursive call
+                        & $PSCommandPath -JobName $jobName -ConfigPath $ConfigPath -DryRun:$DryRun -Silent:$IsSilent -ErrorAction SilentlyContinue
+                    }
+                }
+            }
+        }
+    }
+    finally {
+        $msg = "Folder monitoring stopped."
+        Write-RunnerLog -LogDir $LogDir -Message $msg
+    }
+}
+
 try {
     $logDir = Join-Path $PSScriptRoot 'logs'
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
@@ -364,6 +470,13 @@ try {
         throw "Config file is not valid JSON: $ConfigPath"
     }
 
+    # Check if Monitor mode is enabled
+    if ($Monitor) {
+        Write-ShellMessage -Message "Starting folder monitoring mode..." -IsSilent $Silent
+        Start-FolderMonitoring -Config $cfg -LogDir $logDir -IsSilent $Silent -ConfigPath $ConfigPath -DryRun $DryRun
+        exit 0
+    }
+
     if (-not $cfg.jobs) {
         throw 'No jobs found in config.'
     }
@@ -385,6 +498,19 @@ try {
     if ($JobName) {
         $jobs = @($jobs | Where-Object { $_.name -eq $JobName })
     }
+    elseif ($SourceFolder) {
+        # Resolve full path for comparison (handles relative paths and symlinks)
+        $resolvedSourceFolder = (Resolve-Path -Path $SourceFolder -ErrorAction SilentlyContinue).ProviderPath
+        if ([string]::IsNullOrWhiteSpace($resolvedSourceFolder)) {
+            throw "Source folder '$SourceFolder' not found or not accessible."
+        }
+        $jobs = @($jobs | Where-Object { 
+            $jobSource = [string](Get-ConfigProperty -Object $_ -Name 'source')
+            if ([string]::IsNullOrWhiteSpace($jobSource)) { return $false }
+            $resolvedJobSource = (Resolve-Path -Path $jobSource -ErrorAction SilentlyContinue).ProviderPath
+            $resolvedSourceFolder -eq $resolvedJobSource
+        })
+    }
 
     $duplicateNames = @(
         $jobs |
@@ -398,10 +524,15 @@ try {
 
     if ($jobs.Count -eq 0) {
         $allJobNames = @($cfg.jobs | Where-Object { $_.enabled -ne $false } | ForEach-Object { $_.name })
-        $msg = "No enabled jobs matched filter JobName='$JobName'."
         if ($JobName) {
             $jobList = $allJobNames -join ', '
             $msg = "Job '$JobName' not found. Available jobs: $jobList"
+        }
+        elseif ($SourceFolder) {
+            $msg = "No enabled jobs matched source folder '$SourceFolder'."
+        }
+        else {
+            $msg = "No enabled jobs found in configuration."
         }
         Write-RunnerLog -LogDir $logDir -Message $msg
         Write-Host "[ERROR] $msg" -ForegroundColor Red

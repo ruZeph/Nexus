@@ -511,37 +511,80 @@ Active mechanisms preventing rate limit errors:
 
 ### RealTimeSync Integration
 
-Trigger backups automatically when folder changes are detected using RealTimeSync.
+Trigger backups automatically when folder changes are detected using RealTimeSync with intelligent folder monitoring.
 
-**RealTimeSync Setup for Playnite Backups:**
+#### Recommended: FileSystemWatcher Mode (Multi-Folder Monitoring)
+
+**Why this approach:**
+
+- ✅ Only **one RealTimeSync instance** needed (regardless of folder count)
+- ✅ **Automatic job detection** - script detects changed folder and runs matching jobs
+- ✅ **No blocking** - each job runs independently based on which folder changed
+- ✅ **Easy scaling** - add new jobs to config, no RealTimeSync reconfiguration needed
+- ✅ **Intelligent triggering** - respects idle time (60s) per folder independently
+
+**RealTimeSync Setup for FileSystemWatcher Mode:**
+
+1. **Open RealTimeSync 14.9+**
+2. **Configure folder monitoring (add ALL folders you want to monitor):**
+   - Folders to watch:
+     - `C:\Users\Avisek\Documents\Office Docs`
+     - `C:\Custom User\Ludusavi\PlayniteBackups`
+     - (add more folders as needed)
+   - Idle time: `60` seconds (prevents repeated triggers during rapid changes)
+3. **Set command line to start monitoring:**
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Run-RcloneJobs.ps1" -Monitor -Silent
+```
+
+**How FileSystemWatcher Mode Works:**
+
+1. Script starts and enables FileSystemWatcher on all configured source folders
+2. RealTimeSync calls script immediately with `-Monitor` flag (runs once)
+3. Script detects changes in all monitored folders internally
+4. When a folder has no changes for 60 seconds (idle time):
+   - Script identifies which job(s) match that folder
+   - Automatically runs matching job(s)
+   - Returns to monitoring
+5. Different folders trigger their respective jobs independently
+
+**Example Scenario:**
+
+```
+12:00:00 - User edits file in C:\...\PlayniteBackups
+12:00:05 - User edits file in C:\...\Office Docs
+12:01:05 - Idle time 60s reached for PlayniteBackups → playnite-backup job runs
+12:01:15 - Job completes, resumes monitoring
+12:01:05 - Idle time 60s reached for Office Docs → office-docs-backup job runs
+```
+
+---
+
+#### Alternative: Command-Based Mode (Single Job Only - Legacy)
+
+**Use this only if you want to monitor a single folder with RealTimeSync.**
 
 1. **Open RealTimeSync 14.9+**
 2. **Configure folder monitoring:**
    - Folders to watch: `C:\Custom User\Ludusavi\PlayniteBackups`
    - Idle time: `60` seconds (prevents repeated triggers during rapid changes)
-3. **Set command line to trigger backup (with required `-Silent` flag):**
+3. **Set command line to trigger specific job:**
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Run-RcloneJobs.ps1" -JobName "playnite-backup" -Silent
 ```
 
-**Command breakdown:**
+**Limitations of Command-Based Mode:**
 
-- `powershell.exe` - PowerShell executable
-- `-NoProfile` - Skip profile loading (faster execution)
-- `-ExecutionPolicy Bypass` - Allow script execution
-- `-File` - Path to Run-RcloneJobs.ps1
-- `-JobName "playnite-backup"` - Run only playnite-backup job
-- `-Silent` - **REQUIRED** - No console output (mandatory for RealTimeSync automated execution)
+- ❌ One RealTimeSync instance per job/folder (doesn't scale)
+- ❌ No automatic detection (must hardcode job names)
+- ⚠️ If RealTimeSync calls the script multiple times, jobs may queue up
 
-**How it works:**
-
-1. RealTimeSync monitors folder for changes
-2. When changes detected, waits 60 seconds (idle time)
 3. If no more changes, triggers the PowerShell command
-4. Script acquires mutex, checks internet, runs playnite-backup job
-5. Files synced to `GDrive_Main:Backups/playnite-restic`
-6. Job completes, waits 60 seconds before next job (interval)
+2. Script acquires mutex, checks internet, runs playnite-backup job
+3. Files synced to `GDrive_Main:Backups/playnite-restic`
+4. Job completes, waits 60 seconds before next job (interval)
 
 **Alternative commands (all with `-Silent` for RealTimeSync):**
 
@@ -587,6 +630,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sy
 | -------- | ------ | ------------- |
 | `-ConfigPath` | string | Path to config JSON (default: ./backup-jobs.json) |
 | `-JobName` | string | Run specific job by name |
+| `-SourceFolder` | string | Run jobs matching this source folder |
+| `-Monitor` | switch | **NEW**: Enable FileSystemWatcher monitoring mode (auto-detect folders and trigger jobs) |
 | `-DryRun` | switch | Test mode, no transfers (use `--dry-run` in rclone) |
 | `-Operation` | string | Override operation: `copy` or `sync` |
 | `-FailFast` | switch | Exit immediately on first error |
@@ -618,6 +663,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sy
 
 # Combination
 .\Run-RcloneJobs.ps1 -JobName "office-docs-backup" -DryRun -Silent
+
+# Auto-detect job by source folder (for RealTimeSync multi-folder)
+.\Run-RcloneJobs.ps1 -SourceFolder "C:\Users\Avisek\Documents\Office Docs" -Silent
+
+# **NEW**: Monitor mode - FileSystemWatcher detects all folder changes and triggers jobs
+.\Run-RcloneJobs.ps1 -Monitor -Silent
 ```
 
 ### Exit Codes
