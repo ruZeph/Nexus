@@ -513,7 +513,7 @@ Active mechanisms preventing rate limit errors:
 
 Trigger backups automatically when folder changes are detected using RealTimeSync with intelligent folder monitoring.
 
-#### Recommended: FileSystemWatcher Mode (Multi-Folder Monitoring)
+#### Recommended: Polling-Based Folder Monitoring (Multi-Folder Monitoring)
 
 **Why this approach:**
 
@@ -521,9 +521,9 @@ Trigger backups automatically when folder changes are detected using RealTimeSyn
 - ✅ **Automatic job detection** - script detects changed folder and runs matching jobs
 - ✅ **No blocking** - each job runs independently based on which folder changed
 - ✅ **Easy scaling** - add new jobs to config, no RealTimeSync reconfiguration needed
-- ✅ **Intelligent triggering** - respects idle time (60s) per folder independently
+- ✅ **Intelligent triggering** - waits for idle time (60s) after a real folder change
 
-**RealTimeSync Setup for FileSystemWatcher Mode:**
+**RealTimeSync Setup for Polling-Based Folder Monitoring:**
 
 1. **Open RealTimeSync 14.9+**
 2. **Configure folder monitoring (add ALL folders you want to monitor):**
@@ -538,12 +538,12 @@ Trigger backups automatically when folder changes are detected using RealTimeSyn
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Run-RcloneJobs.ps1" -Monitor -Silent
 ```
 
-**How FileSystemWatcher Mode Works:**
+**How Monitor Mode Works:**
 
-1. Script starts and enables FileSystemWatcher on all configured source folders
+1. Script starts and records a baseline snapshot for all configured source folders
 2. RealTimeSync calls script immediately with `-Monitor` flag (runs once)
-3. Script detects changes in all monitored folders internally
-4. When a folder has no changes for 60 seconds (idle time):
+3. Script polls folder contents every few seconds and detects actual content changes
+4. When a changed folder has no further changes for 60 seconds (idle time):
    - Script identifies which job(s) match that folder
    - Automatically runs matching job(s)
    - Returns to monitoring
@@ -631,7 +631,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sy
 | `-ConfigPath` | string | Path to config JSON (default: ./backup-jobs.json) |
 | `-JobName` | string | Run specific job by name |
 | `-SourceFolder` | string | Run jobs matching this source folder |
-| `-Monitor` | switch | **NEW**: Enable FileSystemWatcher monitoring mode (auto-detect folders and trigger jobs) |
+| `-Monitor` | switch | **NEW**: Enable polling-based folder monitoring mode (auto-detect changed folders and trigger jobs) |
+| `-IdleTimeSeconds` | int | Idle time in seconds before triggering monitored jobs (default: 60, use with `-Monitor`) |
 | `-DryRun` | switch | Test mode, no transfers (use `--dry-run` in rclone) |
 | `-Operation` | string | Override operation: `copy` or `sync` |
 | `-FailFast` | switch | Exit immediately on first error |
@@ -667,8 +668,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sy
 # Auto-detect job by source folder (for RealTimeSync multi-folder)
 .\Run-RcloneJobs.ps1 -SourceFolder "C:\Users\Avisek\Documents\Office Docs" -Silent
 
-# **NEW**: Monitor mode - FileSystemWatcher detects all folder changes and triggers jobs
+# **NEW**: Monitor mode - polling detects folder changes and triggers jobs
 .\Run-RcloneJobs.ps1 -Monitor -Silent
+
+# Monitor mode with custom idle time (10 seconds for testing, 120 for production)
+.\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 10 -Silent
+.\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 120 -Silent
 ```
 
 ### Exit Codes

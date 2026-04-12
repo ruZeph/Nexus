@@ -3,6 +3,7 @@ param(
     [string]$JobName,
     [string]$SourceFolder,
     [switch]$Monitor,
+    [int]$IdleTimeSeconds = 60,
     [switch]$DryRun,
     [switch]$FailFast,
     [switch]$Silent,
@@ -20,6 +21,11 @@ function Write-JobLog {
         [Parameter(Mandatory = $true)][string]$LogFile,
         [Parameter(Mandatory = $true)][string]$Message
     )
+
+    $logDir = Split-Path -Path $LogFile -Parent
+    if (-not [string]::IsNullOrWhiteSpace($logDir)) {
+        New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    }
 
     $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     Add-Content -LiteralPath $LogFile -Value "[$ts] $Message"
@@ -337,13 +343,40 @@ function ConvertTo-PositiveInt {
     return $parsed
 }
 
+function Get-FolderSnapshotSignature {
+    param(
+        [Parameter(Mandatory = $true)][string]$FolderPath
+    )
+
+    if (-not (Test-Path -LiteralPath $FolderPath)) {
+        return ''
+    }
+
+    $items = Get-ChildItem -LiteralPath $FolderPath -Recurse -Force -ErrorAction SilentlyContinue |
+        Sort-Object -Property FullName
+
+    if (-not $items) {
+        return 'EMPTY'
+    }
+
+    $signatureParts = foreach ($item in $items) {
+        $relativePath = $item.FullName.Substring($FolderPath.Length).TrimStart('\')
+        $lengthValue = if ($item.PSIsContainer) { 0 } else { $item.Length }
+        "{0}|{1}|{2}|{3}" -f $relativePath, $item.PSIsContainer, $lengthValue, $item.LastWriteTimeUtc.Ticks
+    }
+
+    return [string]::Join("`n", $signatureParts)
+}
+
 function Start-FolderMonitoring {
     param(
         [Parameter(Mandatory = $true)]$Config,
         [Parameter(Mandatory = $true)][string]$LogDir,
         [bool]$IsSilent = $false,
         [string]$ConfigPath = "",
-        [bool]$DryRun = $false
+        [bool]$DryRun = $false,
+        [int]$IdleTimeSeconds = 60,
+        [System.Threading.Mutex]$Mutex = $null
     )
 
     # Build folder-to-jobs mapping
@@ -378,16 +411,19 @@ function Start-FolderMonitoring {
         throw "No valid source folders found to monitor."
     }
 
-    # Track last write time for each folder using Get-ChildItem
-    $lastWriteTime = @{}
-    $idleTimeSeconds = 60
+    # Track folder snapshots so only real content changes trigger jobs
+    $folderState = @{}
 
-    # Initialize last write times
+    # Initialize baseline snapshots without triggering jobs on startup
     foreach ($folder in $watchedFolders) {
-        $lastWriteTime[$folder] = (Get-Date).AddSeconds(-$idleTimeSeconds - 1)
+        $folderState[$folder] = [pscustomobject]@{
+            Snapshot = Get-FolderSnapshotSignature -FolderPath $folder
+            LastChange = $null
+            PendingChange = $false
+        }
     }
 
-    $msg = "Folder monitoring started. Watching $($watchedFolders.Count) folder(s) with ${idleTimeSeconds}s idle time."
+    $msg = "Folder monitoring started. Watching $($watchedFolders.Count) folder(s) with ${IdleTimeSeconds}s idle time."
     Write-RunnerLog -LogDir $LogDir -Message $msg
     Write-ShellMessage -Message $msg -IsSilent $IsSilent
 
@@ -397,39 +433,56 @@ function Start-FolderMonitoring {
             $now = Get-Date
 
             foreach ($folder in $watchedFolders) {
-                # Get newest file/folder modification time in this directory tree
-                $newestItem = Get-ChildItem -Path $folder -Recurse -File -ErrorAction SilentlyContinue |
-                    Sort-Object -Property LastWriteTime -Descending |
-                    Select-Object -First 1
-
-                if ($newestItem) {
-                    $itemTime = $newestItem.LastWriteTime
-                    # If we see a newer item than cached, update the cache  
-                    if ($itemTime -gt $lastWriteTime[$folder]) {
-                        $lastWriteTime[$folder] = $now
-                    }
+                $state = $folderState[$folder]
+                if ($null -eq $state) {
+                    continue
                 }
 
-                # Check if idle time has elapsed
-                $secsIdle = ($now - $lastWriteTime[$folder]).TotalSeconds
-                
-                if ($secsIdle -ge $idleTimeSeconds) {
-                    # Reset to prevent re-triggering
-                    $lastWriteTime[$folder] = $now
-                    
-                    $jobs = $folderJobMap[$folder]
-                    $msg = "Idle time reached for: $folder. Triggering jobs: $($jobs -join ', ')"
+                $currentSnapshot = Get-FolderSnapshotSignature -FolderPath $folder
+                if ($currentSnapshot -ne $state.Snapshot) {
+                    $state.Snapshot = $currentSnapshot
+                    $state.LastChange = $now
+                    $state.PendingChange = $true
+
+                    $msg = "Change detected in folder: $folder"
+                    Write-RunnerLog -LogDir $LogDir -Message $msg
+                    Write-ShellMessage -Message $msg -IsSilent $IsSilent
+                }
+
+                if (-not $state.PendingChange) {
+                    continue
+                }
+
+                $secsIdle = ($now - $state.LastChange).TotalSeconds
+                if ($secsIdle -lt $IdleTimeSeconds) {
+                    continue
+                }
+
+                $jobs = $folderJobMap[$folder]
+                $msg = "Idle time reached for changed folder: $folder. Triggering jobs: $($jobs -join ', ')"
+                Write-RunnerLog -LogDir $LogDir -Message $msg
+                Write-ShellMessage -Message $msg -IsSilent $IsSilent
+
+                # Prevent repeat triggers until a new change is detected
+                $state.PendingChange = $false
+                $state.LastChange = $now
+
+                foreach ($jobName in $jobs) {
+                    $msg = "Executing job: $jobName (triggered by folder: $folder)"
                     Write-RunnerLog -LogDir $LogDir -Message $msg
                     Write-ShellMessage -Message $msg -IsSilent $IsSilent
 
-                    # Run the jobs
-                    foreach ($jobName in $jobs) {
-                        $msg = "Executing job: $jobName (triggered by folder: $folder)"
-                        Write-RunnerLog -LogDir $LogDir -Message $msg
-                        Write-ShellMessage -Message $msg -IsSilent $IsSilent
-                        
-                        # Run job via recursive call
-                        & $PSCommandPath -JobName $jobName -ConfigPath $ConfigPath -DryRun:$DryRun -Silent:$IsSilent -ErrorAction SilentlyContinue
+                    # Temporarily release mutex so job can acquire it
+                    if ($null -ne $Mutex) {
+                        $Mutex.ReleaseMutex() | Out-Null
+                    }
+                    
+                    # Run job via recursive call
+                    & $PSCommandPath -JobName $jobName -ConfigPath $ConfigPath -DryRun:$DryRun -Silent:$IsSilent -ErrorAction SilentlyContinue
+                    
+                    # Re-acquire mutex for continued monitoring
+                    if ($null -ne $Mutex) {
+                        $Mutex.WaitOne() | Out-Null
                     }
                 }
             }
@@ -473,7 +526,7 @@ try {
     # Check if Monitor mode is enabled
     if ($Monitor) {
         Write-ShellMessage -Message "Starting folder monitoring mode..." -IsSilent $Silent
-        Start-FolderMonitoring -Config $cfg -LogDir $logDir -IsSilent $Silent -ConfigPath $ConfigPath -DryRun $DryRun
+        Start-FolderMonitoring -Config $cfg -LogDir $logDir -IsSilent $Silent -ConfigPath $ConfigPath -DryRun $DryRun -IdleTimeSeconds $IdleTimeSeconds -Mutex $mutex
         exit 0
     }
 
