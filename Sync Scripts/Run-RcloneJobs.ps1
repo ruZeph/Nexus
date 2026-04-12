@@ -913,13 +913,13 @@ function Start-FolderMonitoring {
 try {
     $logDir = Join-Path $PSScriptRoot 'logs'
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-    Write-RunnerSessionSeparator -LogDir $logDir
 
     if (-not $mutex.WaitOne(0)) {
         Write-RunnerLog -LogDir $logDir -Message 'Another runner instance is already active. Exiting.'
         exit 0
     }
     $ownsMutex = $true
+    Write-RunnerSessionSeparator -LogDir $logDir
 
     # Check internet connectivity
     if (-not (Test-InternetConnectivity)) {
