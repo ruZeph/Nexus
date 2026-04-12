@@ -83,6 +83,7 @@ Automatically detects and logs rate-limiting errors from rclone:
 - **Strategy**: Combines retries, backoff, and job intervals
 
 **Example log output:**
+
 ```text
 [2026-04-12 22:17:43] START operation=sync source=C:\docs dest=GDrive_Main:docs profile=docs-small-files
 [2026-04-12 22:18:03] DONE exitcode=0
@@ -95,6 +96,7 @@ Automatically detects and logs rate-limiting errors from rclone:
 Prevents rate limiting by adding delays between sequential job executions.
 
 **Global setting** (default for all jobs):
+
 ```json
 {
   "settings": {
@@ -104,6 +106,7 @@ Prevents rate limiting by adding delays between sequential job executions.
 ```
 
 **Per-job override**:
+
 ```json
 {
   "jobs": [
@@ -116,6 +119,7 @@ Prevents rate limiting by adding delays between sequential job executions.
 ```
 
 **Timeline example:**
+
 ```
 14:00:00 - Start job1 (office-docs-backup)
 14:00:45 - job1 completes
@@ -129,6 +133,7 @@ Prevents rate limiting by adding delays between sequential job executions.
 Ensures only one script instance runs simultaneously using Windows global mutex.
 
 **Behavior:**
+
 - First instance acquires `Global\RcloneBackupRunner` mutex
 - Subsequent instances exit gracefully with: "Another runner instance is already active"
 - Automatic cleanup on exit
@@ -145,11 +150,13 @@ Verifies internet connectivity before attempting backup operations.
 ### 5. Comprehensive Logging System
 
 **Log locations:**
+
 - Per-job logs: `logs/<job-name>/YYYYMMDD-HHMMSS.log`
 - Runner logs: `logs/runner.log` (overall execution)
 - Error logs: `logs/runner-error.log` (script errors)
 
 **Log retention:**
+
 - Configurable per-job (default: 10 files)
 - Automatically deletes oldest logs when limit exceeded
 - Prevents disk space issues
@@ -468,6 +475,7 @@ The following is the active configuration currently running:
 ### Sync Operation Details
 
 **What Sync Does:**
+
 - Ensures destination mirrors source
 - Deletes files from destination not in source (use `copy` to prevent this)
 - Transfers new/modified files from source to destination
@@ -481,6 +489,7 @@ The following is the active configuration currently running:
 | playnite-restic | Large files/archives | 8 | 4 | 32M |
 
 **Chunk Size Notes:**
+
 - Must be a power of 2: 1M, 2M, 4M, 8M, 16M, 32M, 64M, 128M, 256M
 - Larger = better for large files, worse for small files
 - Smaller = safer for unreliable connections
@@ -512,6 +521,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sy
 ```
 
 **Command breakdown:**
+
 - `powershell.exe` - PowerShell executable
 - `-NoProfile` - Skip profile loading (faster execution)
 - `-ExecutionPolicy Bypass` - Allow script execution
@@ -520,6 +530,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sy
 - `-Silent` - **REQUIRED** - No console output (mandatory for RealTimeSync automated execution)
 
 **How it works:**
+
 1. RealTimeSync monitors folder for changes
 2. When changes detected, waits 60 seconds (idle time)
 3. If no more changes, triggers the PowerShell command
@@ -541,6 +552,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sy
 ```
 
 **Performance Tips:**
+
 - **`-Silent` flag is MANDATORY for RealTimeSync** - reduces overhead and prevents console window spawning
 - Set idle time to at least 30-60 seconds (prevents excessive triggers)
 - Monitor logs in `logs/playnite-backup/` to verify triggers
@@ -633,6 +645,7 @@ Select-String "rate limited" logs\office-docs-backup\*.log
 ### Test Suite Overview
 
 **50+ automated tests** covering:
+
 - Unit tests: Core functions and error handling
 - Integration tests: Full script execution
 - Parallel tests: Concurrency and mutex locking
@@ -695,6 +708,7 @@ Select-String "rate limited" logs\office-docs-backup\*.log
 ### Test Results Interpretation
 
 ✅ **All Pass (100% expected):**
+
 ```
 Passed:     50+
 Failed:     0
@@ -704,6 +718,7 @@ Pass Rate:  100%
 ```
 
 ✗ **Some Fail:**
+
 - Check specific failure messages
 - Review configuration changes
 - Verify rclone availability
@@ -728,6 +743,7 @@ Pass Rate:  100%
 **Cause:** Multiple instances running simultaneously
 
 **Solutions:**
+
 1. Wait for previous instance to complete
 2. Check Task Scheduler for running task
 3. Check Process Explorer for PowerShell processes
@@ -738,6 +754,7 @@ Pass Rate:  100%
 **Cause:** API quotas exceeded due to too many requests
 
 **Solutions:**
+
 1. Increase `jobIntervalSeconds`: `30` → `60` or `90`
 2. Reduce `--transfers` in profiles: `6` → `4` or `3`
 3. Reduce `--checkers`: `12` → `6` or `4`
@@ -745,6 +762,7 @@ Pass Rate:  100%
 5. Contact rclone support for quota increases
 
 **Example fix:**
+
 ```json
 {
   "settings": {
@@ -763,10 +781,12 @@ Pass Rate:  100%
 **Cause:** Chunk size must be a power of 2
 
 **Solutions:**
+
 - Valid: 1M, 2M, 4M, 8M, 16M, 32M, 64M, 128M, 256M
 - Invalid: 3M, 5M, 24M, 48M
 
 **Fix:**
+
 ```json
 {
   "profiles": {
@@ -782,6 +802,7 @@ Pass Rate:  100%
 **Cause:** Script checks internet connectivity before running
 
 **Solutions:**
+
 1. Verify internet connection: `ping 8.8.8.8`
 2. Check firewall rules allow ICMP
 3. Verify DNS resolution works
@@ -792,6 +813,7 @@ Pass Rate:  100%
 **Cause:** Task Scheduler issue or bad configuration
 
 **Solutions:**
+
 1. Verify Task Scheduler task exists: `Get-ScheduledTask -TaskName "RcloneBackups"`
 2. Check task history for errors
 3. Verify config file path in task action
@@ -803,12 +825,15 @@ Pass Rate:  100%
 **Cause:** Log retention not being applied
 
 **Solutions:**
+
 1. Check `logRetentionCount` setting (should be 10 or less)
 2. Manually clean old logs: `Remove-Item logs\* -Recurse -Force`
-3. Set more aggressive retention: 
+3. Set more aggressive retention:
+
    ```json
    {"settings": {"logRetentionCount": 5}}
    ```
+
 4. Verify script has write permissions to logs directory
 
 ### Problem: Rclone connection timeout
@@ -816,6 +841,7 @@ Pass Rate:  100%
 **Cause:** Network issue or slow Google Drive
 
 **Solutions:**
+
 1. Increase `--timeout`: `"10m"` → `"15m"`
 2. Increase `--contimeout`: `"30s"` → `"60s"`
 3. Verify internet speed and stability
@@ -827,6 +853,7 @@ Pass Rate:  100%
 **Cause:** Parallel tests or rclone process stuck
 
 **Solutions:**
+
 1. Kill hung processes: `Stop-Process -Name powershell -Force`
 2. Run quick tests: `.\Test-RcloneJobs.ps1 -QuickTest`
 3. Restart PowerShell
@@ -954,6 +981,7 @@ Specify your license here (e.g., MIT, Apache 2.0)
 ### Version 1.0.0 (Latest)
 
 **Features:**
+
 - ✅ Rate limit detection
 - ✅ Job intervals/cooldown
 - ✅ Mutex process locking
@@ -966,6 +994,7 @@ Specify your license here (e.g., MIT, Apache 2.0)
 - ✅ Chunk size power-of-2 validation
 
 **Fixes:**
+
 - ✅ Log retention now properly enforced
 - ✅ Test suite no longer triggers accidental backups
 - ✅ Internet connectivity check runs before operations
@@ -985,3 +1014,4 @@ Specify your license here (e.g., MIT, Apache 2.0)
 **Questions?** Check logs in `logs/` directory or run tests with `-Verbose` flag.
 
 **Ready to migrate to production?** Test with `-DryRun` first, then schedule with Task Scheduler.
+
