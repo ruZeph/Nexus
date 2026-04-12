@@ -44,6 +44,22 @@ function Write-ShellMessage {
     }
 }
 
+function Test-InternetConnectivity {
+    param(
+        [Parameter(Mandatory = $false)][string]$HostName = '8.8.8.8',
+        [Parameter(Mandatory = $false)][int]$TimeoutMilliseconds = 5000
+    )
+
+    try {
+        $ping = [System.Net.NetworkInformation.Ping]::new()
+        $result = $ping.Send($HostName, $TimeoutMilliseconds)
+        return $result.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
+    }
+    catch {
+        return $false
+    }
+}
+
 function Resolve-RcloneExe {
     $cmd = Get-Command rclone.exe -ErrorAction SilentlyContinue
     if (-not $cmd) {
@@ -327,6 +343,14 @@ try {
         exit 0
     }
     $ownsMutex = $true
+
+    # Check internet connectivity
+    if (-not (Test-InternetConnectivity)) {
+        $msg = 'No internet connectivity detected. Backup operations require internet access. Exiting.'
+        Write-RunnerLog -LogDir $logDir -Message $msg
+        Write-Host "[ERROR] $msg" -ForegroundColor Red
+        exit 1
+    }
 
     if (-not (Test-Path -LiteralPath $ConfigPath)) {
         throw "Config file not found: $ConfigPath"

@@ -157,6 +157,10 @@ function Test-ScriptStructure {
     Write-TestCase "Script has job interval logic"
     $hasInterval = [bool]($content -match 'Start-Sleep.*jobInterval')
     Assert-True $hasInterval "Should have job interval logic"
+
+    Write-TestCase "Script has internet connectivity check"
+    $hasInternet = [bool]($content -match 'function Test-InternetConnectivity')
+    Assert-True $hasInternet "Should have Test-InternetConnectivity function"
 }
 
 function Test-ConfigurationExamples {
@@ -633,6 +637,44 @@ function Test-ConnectionTimeout {
     Write-Pass "Timeout handling structure is in place"
 }
 
+function Test-InternetConnectivityFunction {
+    Write-TestHeader "Unit Test: Internet Connectivity Check"
+
+    # Load the function directly from the script content
+    $scriptContent = Get-Content -LiteralPath $testConfig.scriptPath
+    
+    Write-TestCase "Test-InternetConnectivity function is defined"
+    $hasFunction = [bool]($scriptContent -match 'function Test-InternetConnectivity')
+    Assert-True $hasFunction "Should have Test-InternetConnectivity function defined"
+
+    # dot-source the script to load functions properly
+    . $testConfig.scriptPath | Out-Null
+
+    Write-TestCase "Test-InternetConnectivity function returns boolean"
+    try {
+        $result = Test-InternetConnectivity -ErrorAction Stop
+        Assert-True ($result -is [bool]) "Should return a boolean value"
+    } catch {
+        Write-Fail "Failed to call Test-InternetConnectivity: $_"
+    }
+
+    Write-TestCase "Test-InternetConnectivity can ping default host"
+    try {
+        $result = Test-InternetConnectivity
+        Assert-True $result "Should successfully connect to internet (appears online)"
+    } catch {
+        Write-Info "Internet connectivity test skipped (offline or network issue)"
+    }
+
+    Write-TestCase "Test-InternetConnectivity accepts custom parameters"
+    try {
+        $result = Test-InternetConnectivity -HostName "8.8.8.8" -TimeoutMilliseconds 2000
+        Assert-True ($result -is [bool]) "Should accept custom parameters and return boolean"
+    } catch {
+        Write-Fail "Failed with custom parameters: $_"
+    }
+}
+
 # ============================================================
 # REPORT GENERATION
 # ============================================================
@@ -692,6 +734,7 @@ function Main {
             Test-DisabledJobsSkipped
             Test-InvalidJobName
             Test-ConnectionTimeout
+            Test-InternetConnectivityFunction
         }
         'Integration' {
             Test-ScriptValidation
@@ -720,6 +763,7 @@ function Main {
             Test-DisabledJobsSkipped
             Test-InvalidJobName
             Test-ConnectionTimeout
+            Test-InternetConnectivityFunction
             
             Test-ScriptValidation
             Test-DryRunMode
@@ -978,54 +1022,6 @@ function Test-LogFileGeneration {
 
 # ============================================================
 # INTEGRATION TESTS - Test Script Features
-# ============================================================
-
-function Test-DryRunMode {
-    Write-TestHeader "Integration Test: Dry-Run Mode"
-
-    Write-TestCase "Script runs in dry-run mode without errors"
-    $logDir = Join-Path $testConfig.testLogDir "dryrun"
-    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-    
-    $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $testConfig.scriptPath -JobName "office-docs-backup" -DryRun -Silent 2>&1
-    
-    Write-Info "Exit code: $LASTEXITCODE"
-    Assert-Equal 0 $LASTEXITCODE "Dry-run should complete successfully"
-    
-    Remove-Item $logDir -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-function Test-ScriptValidation {
-    Write-TestHeader "Integration Test: Script Validation"
-
-    Write-TestCase "Main script has no syntax errors"
-    $syntaxCheck = & powershell.exe -NoProfile -Command "try { [scriptblock]::Create((Get-Content -Raw -LiteralPath '$($testConfig.scriptPath)')); Write-Host 'OK' } catch { Write-Host 'ERROR: `$_' }"
-    
-    Assert-True ($syntaxCheck -eq "OK") "Script should have valid syntax"
-
-    Write-TestCase "Script is not empty"
-    $content = Get-Content -Raw -LiteralPath $testConfig.scriptPath
-    Assert-True ($content.Length -gt 1000) "Script should have content"
-}
-
-function Test-LogFileStructure {
-    Write-TestHeader "Integration Test: Log File Structure"
-
-    Write-TestCase "Runner log exists after execution"
-    $logDir = Join-Path $PSScriptRoot 'logs'
-    if (Test-Path $logDir) {
-        $runnerLog = Join-Path $logDir 'runner.log'
-        if (Test-Path $runnerLog) {
-            Assert-FileExists $runnerLog "Runner log should exist"
-            Assert-FileContains $runnerLog '\[.+\]' "Log should have timestamps"
-        } else {
-            Write-Info "Runner log not created (expected on first run)"
-        }
-    } else {
-        Write-Info "Logs directory not yet created"
-    }
-}
-
 # ============================================================
 # PARALLEL TESTS - Test Mutex and Concurrent Execution
 # ============================================================
