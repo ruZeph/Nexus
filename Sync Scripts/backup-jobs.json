@@ -1,31 +1,53 @@
 {
+  "settings": {
+    "continueOnJobError": true,
+    "defaultOperation": "sync",
+    "defaultExtraArgs": [
+      "--retries", "5",
+      "--retries-sleep", "15s",
+      "--contimeout", "30s",
+      "--timeout", "2m"
+    ]
+  },
+  "profiles": {
+    "docs-small-files": {
+      "operation": "sync",
+      "extraArgs": [
+        "--transfers", "8",
+        "--checkers", "16",
+        "--fast-list",
+        "--exclude", "~$*"
+      ]
+    },
+    "playnite-restic": {
+      "operation": "sync",
+      "extraArgs": [
+        "--transfers", "2",
+        "--checkers", "4",
+        "--fast-list",
+        "--delete-during"
+      ]
+    }
+  },
   "jobs": [
     {
       "name": "office-docs-backup",
       "enabled": true,
-      "operation": "copy",
+      "profile": "docs-small-files",
       "source": "C:\\Users\\Avisek\\Documents\\Office Docs",
       "dest": "GDrive_Main:Documents/Office_Docs",
       "extraArgs": [
-        "--transfers", "4",
-        "--checkers", "8",
-        "--fast-list",
-        "--retries", "3",
-        "--retries-sleep", "10s",
-        "--contimeout", "20s",
-        "--timeout", "1m"
+        "--metadata"
       ]
     },
     {
       "name": "playnite-backup",
       "enabled": true,
-      "operation": "sync",
+      "profile": "playnite-restic",
       "source": "C:\\Custom User\\Ludusavi\\PlayniteBackups",
       "dest": "GDrive_Main:backups/playnite-restic",
       "extraArgs": [
-        "--transfers", "2",
-        "--checkers", "4",
-        "--fast-list"
+        "--update"
       ]
     }
   ]
