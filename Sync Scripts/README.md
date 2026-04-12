@@ -17,7 +17,7 @@ A PowerShell-based automation framework for managing rclone backup jobs with:
 - [Features](#features)
 - [Installation](#installation)
 - [Configuration](#configuration)
-- [Real-Time Sync Configuration](#real-time-sync-configuration)
+- [Monitor Mode Configuration](#monitor-mode-configuration)
 - [Usage Guide](#usage-guide)
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
@@ -50,7 +50,7 @@ A PowerShell-based automation framework for managing rclone backup jobs with:
 .\Run-RcloneJobs.ps1 -Silent
 ```
 
-### **NEW**: Continuous Folder Monitoring (No External Tools Needed!)
+### Continuous Folder Monitoring (Core)
 
 ```powershell
 # Start continuous monitoring - detects all folder changes and triggers jobs automatically
@@ -61,6 +61,7 @@ A PowerShell-based automation framework for managing rclone backup jobs with:
 ```
 
 **That's it!** The script:
+
 - ✅ Monitors all configured source folders continuously
 - ✅ Auto-detects folder changes internally
 - ✅ Triggers only the matching jobs when idle time reached
@@ -97,128 +98,87 @@ Register-ScheduledTask -Action $action -Trigger $trigger `
 
 ## Features
 
-### **NEW**: Continuous Folder Monitoring (Self-Contained)
+### 1. Continuous Folder Monitoring (Core)
 
-Real-time backup triggering without external tools - monitor mode revolutionizes how you manage backups!
+Monitor mode is a built-in core capability for real-time sync triggering.
 
-- **Self-Contained**: No RealTimeSync or external tools needed
-- **Auto-Detection**: Continuously monitors all configured folders for changes
-- **Intelligent Triggering**: Only triggers jobs for folders that actually changed
-- **Dynamic Config Reload**: Add/remove jobs without restarting (checks every 30 seconds)
-- **Edge Case Handling**: Gracefully handles deleted folders, permission errors, access issues
-- **Security**: Path validation, job name sanitization, injection prevention
-- **Performance**: Uses minimal CPU/memory - only checks top-level directory structure
-- **Production-Ready**: Mutex locking, comprehensive logging, error recovery
+- Uses FileSystemWatcher for low-latency event detection
+- Uses 5-second snapshot checks as reliability fallback
+- Detects changes using snapshot hashing of top-level items (`Name` + `LastWriteTimeUtc`)
+- Waits for idle time (`-IdleTimeSeconds`, default 60) before triggering jobs
+- Supports dynamic config reload every 30 seconds
+- Handles inaccessible/deleted folders gracefully
 
-**Quick start monitoring:**
+**Quick start:**
+
 ```powershell
 .\Run-RcloneJobs.ps1 -Monitor -Silent
 ```
 
-Just run once, and it monitors continuously. Add new jobs to `backup-jobs.json` - monitor detects them automatically within 30 seconds!
+### 2. Rate Limit Detection And Handling
 
----
+Automatically detects and logs rclone throttling/rate-limit failures.
 
-### 1. Rate Limit Detection & Handling
+- Detects HTTP 403/429 and common throttling messages
+- Marks failures with `(rate limited)` in logs
+- Works with retries, backoff, and job intervals
 
-Automatically detects and logs rate-limiting errors from rclone:
+### 3. Intelligent Job Intervals
 
-- **Detection**: HTTP 403/429 errors, "TooManyRequests", "Rate limit exceeded", "Throttled"
-- **Logging**: Marks failures with `(rate limited)` indicator
-- **Strategy**: Combines retries, backoff, and job intervals
+Controls delay between job runs to reduce API pressure and avoid bursts.
 
-**Example log output:**
+- Global default interval via `settings.jobIntervalSeconds`
+- Per-job `interval` override support
 
-```text
-[2026-04-12 22:17:43] START operation=sync source=C:\docs dest=GDrive_Main:docs profile=docs-small-files
-[2026-04-12 22:18:03] DONE exitcode=0
-[2026-04-12 22:18:03] START operation=sync source=C:\backup dest=GDrive_Main:backup profile=backup-profile
-[2026-04-12 22:19:45] FAILED exitcode=1 (rate limited)
-```
+### 4. Mutex-Based Process Locking
 
-### 2. Intelligent Job Intervals (Cooldown Between Jobs)
+Prevents multiple runner instances from executing concurrently.
 
-Prevents rate limiting by adding delays between sequential job executions.
+- Uses `Global\RcloneBackupRunner`
+- Additional instances exit gracefully
+- Avoids conflicting API calls and log corruption
 
-**Global setting** (default for all jobs):
+### 5. Internet Connectivity Check
 
-```json
-{
-  "settings": {
-    "jobIntervalSeconds": 30
-  }
-}
-```
+Validates connectivity before running backup work.
 
-**Per-job override**:
+- Pings `8.8.8.8` at startup
+- Exits with clear error when offline
 
-```json
-{
-  "jobs": [
-    {
-      "name": "playnite-backup",
-      "interval": 60
-    }
-  ]
-}
-```
+### 6. Comprehensive Logging
 
-**Timeline example:**
+Captures job-level and runner-level operational data.
 
-```text
-14:00:00 - Start job1 (office-docs-backup)
-14:00:45 - job1 completes
-14:01:45 - Wait 60s (job1.interval), then start job2
-14:02:30 - job2 completes
-14:03:00 - Wait 30s (global setting), then start job3
-```
+- Job logs: `logs/<job-name>/YYYYMMDD-HHMMSS.log`
+- Runner log: `logs/runner.log`
+- Error log: `logs/runner-error.log`
+- Automatic log retention cleanup
 
-### 3. Mutex-Based Process Locking
+### 7. Flexible JSON Configuration
 
-Ensures only one script instance runs simultaneously using Windows global mutex.
+- Global settings
+- Reusable profiles
+- Per-job overrides
+- Human-readable JSON format
 
-**Behavior:**
+### 8. Error Handling And Resilience
 
-- First instance acquires `Global\RcloneBackupRunner` mutex
-- Subsequent instances exit gracefully with: "Another runner instance is already active"
-- Automatic cleanup on exit
-- Prevents conflicting API calls and log corruption
+- Continue-on-error behavior for batch runs
+- Fail-fast mode when required
+- Graceful handling for invalid/missing inputs
+- Built-in retry behavior from rclone
 
-### 4. Internet Connectivity Check
+### How Monitoring Works
 
-Verifies internet connectivity before attempting backup operations.
+Monitor mode uses a hybrid approach: FileSystemWatcher events plus polling snapshot signatures as fallback.
 
-- Pings Google DNS (8.8.8.8) at startup
-- Exits gracefully with error if no connection
-- Prevents failed backup attempts on disconnected systems
+1. Every 5 seconds, the script scans configured source folders.
+2. It builds a signature from top-level entry names and `LastWriteTimeUtc`.
+3. If the signature changed, the folder is marked as changed.
+4. After idle time is reached, linked jobs are executed.
+5. Monitoring continues and config is reloaded periodically.
 
-### 5. Comprehensive Logging System
-
-**Log locations:**
-
-- Per-job logs: `logs/<job-name>/YYYYMMDD-HHMMSS.log`
-- Runner logs: `logs/runner.log` (overall execution)
-- Error logs: `logs/runner-error.log` (script errors)
-
-**Log retention:**
-
-- Configurable per-job (default: 10 files)
-- Automatically deletes oldest logs when limit exceeded
-- Prevents disk space issues
-
-### 6. Flexible Configuration System
-
-- Global settings for all jobs
-- Profile templates for reusable configurations
-- Per-job overrides for fine-tuning
-- JSON-based, human-readable format
-
-### 7. Error Handling & Resilience
-
-- **Continue on error**: Skip failed jobs, continue with next
-- **Fail-fast mode**: Stop immediately on first error
-- **Graceful degradation**: Handle missing configs, invalid JSON, missing sources
-- **Automatic retry**: Built-in rclone retry logic with exponential backoff
+This design keeps dependencies low, works consistently with many path types, and avoids reliance on external sync tooling.
 
 ---
 
@@ -409,7 +369,7 @@ Individual backup job definitions.
 
 ---
 
-## Real-Time Sync Configuration
+## Monitor Mode Configuration
 
 ### Current Production Setup
 
@@ -557,22 +517,25 @@ Active mechanisms preventing rate limit errors:
 
 The `-Monitor` flag puts the script into continuous monitoring mode:
 
-- **Detects folder changes** using efficient top-level directory polling (very low CPU/memory)
+- **Detects folder changes** using FileSystemWatcher (event-based) with snapshot-diff fallback
 - **Auto-triggers matching jobs** when a folder has been idle for N seconds
 - **Reloads config every 30 seconds** - add/remove jobs on-the-fly without restarting
+- **Logs resource telemetry** every run/start and periodically (`[RESOURCE]` CPU/memory/handles/threads)
 - **Handles edge cases** - deleted folders, permission errors, access issues
 - **Validates security** - path validation, job name sanitization, injection prevention
 - **Production-ready** - mutex locking, comprehensive logging, graceful error recovery
 
 ### Quick Start Monitoring
 
-**Option 1: Run Now (Testing)**
+#### Option 1: Run Now (Testing)
+
 ```powershell
 # Start monitoring with 10-second idle time for fast testing
 .\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 10
 ```
 
-**Option 2: Run in Background (Production)**
+#### Option 2: Run in Background (Production)
+
 ```powershell
 # Start monitoring in background session with 60-second idle time (default)
 .\Run-RcloneJobs.ps1 -Monitor -Silent
@@ -584,8 +547,8 @@ The `-Monitor` flag puts the script into continuous monitoring mode:
 ### How Monitor Mode Works
 
 1. **Startup**: Script reads config, discovers all monitored folders, takes baseline snapshots
-2. **Polling Loop**: Every 5 seconds, checks each folder for changes
-3. **Change Detection**: When files/folders change, marks that folder as "changed"
+2. **Watcher + Polling Loop**: Every 5 seconds, checks each folder and consumes watcher events
+3. **Change Detection**: Watcher logs change type/path; snapshot diff acts as reliability fallback
 4. **Idle Waiting**: Waits until the folder has been quiet for the idle time (default 60s)
 5. **Job Trigger**: Only triggers jobs for the specific changed folder
 6. **Config Reload**: Every 30 seconds, reloads config - detects new/removed jobs automatically
@@ -621,7 +584,7 @@ Since the monitor reloads config every 30 seconds:
 
 ### Running Monitor Mode Continuously
 
-**Option A: Windows Task Scheduler (Recommended)**
+#### Option A: Windows Task Scheduler (Recommended)
 
 Create an automated task to run on startup:
 
@@ -647,6 +610,7 @@ Register-ScheduledTask -TaskName "RcloneJobsMonitor" -InputObject $task -Force
 ```
 
 Then verify it's running:
+
 ```powershell
 # Check task status
 Get-ScheduledTask -TaskName "RcloneJobsMonitor" | Get-ScheduledTaskInfo
@@ -655,9 +619,10 @@ Get-ScheduledTask -TaskName "RcloneJobsMonitor" | Get-ScheduledTaskInfo
 Get-Content "C:\Custom User\Nexus\Sync Scripts\logs\runner.log" -Tail 20
 ```
 
-**Option B: Console Session (Manual, for testing)**
+#### Option B: Console Session (Manual, for testing)
 
 Simply run:
+
 ```powershell
 cd "C:\Custom User\Nexus\Sync Scripts"
 .\Run-RcloneJobs.ps1 -Monitor -Silent
@@ -676,6 +641,7 @@ Monitor mode is designed for minimal resource usage:
 - **Frequency**: Every 5 seconds per folder
 
 Memory remains stable because:
+
 - Snapshots use MD5 hash, not full content
 - Only tracks modified folder names + timestamps
 - Garbage collection enabled for stale state objects
@@ -718,7 +684,7 @@ Memory remains stable because:
 | `-ConfigPath` | string | Path to config JSON (default: ./backup-jobs.json) |
 | `-JobName` | string | Run specific job by name |
 | `-SourceFolder` | string | Run jobs matching this source folder |
-| `-Monitor` | switch | **NEW**: Enable continuous folder monitoring (auto-detect changes, trigger jobs) |
+| `-Monitor` | switch | Enable continuous folder monitoring (auto-detect changes, trigger jobs) |
 | `-IdleTimeSeconds` | int | Idle time before triggering jobs (default: 60). Must be 5-3600 seconds. Use with `-Monitor` |
 | `-DryRun` | switch | Test mode, no transfers (use `--dry-run` in rclone) |
 | `-Operation` | string | Override operation: `copy` or `sync` |
@@ -752,24 +718,13 @@ Memory remains stable because:
 # Combination: Specific job, dry-run, silent
 .\Run-RcloneJobs.ps1 -JobName "office-docs-backup" -DryRun -Silent
 
-# **NEW**: Continuous monitoring (the recommended approach for real-time backup!)
+# Continuous monitoring
 .\Run-RcloneJobs.ps1 -Monitor -Silent
 
 # Monitor mode with custom idle time
 .\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 10 -Silent
 
 # Monitor mode - 2 minute idle time (production)
-.\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 120 -Silent
-```
-
-# Auto-detect job by source folder (for RealTimeSync multi-folder)
-.\Run-RcloneJobs.ps1 -SourceFolder "C:\Users\Avisek\Documents\Office Docs" -Silent
-
-# **NEW**: Monitor mode - polling detects folder changes and triggers jobs
-.\Run-RcloneJobs.ps1 -Monitor -Silent
-
-# Monitor mode with custom idle time (10 seconds for testing, 120 for production)
-.\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 10 -Silent
 .\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 120 -Silent
 ```
 
@@ -791,6 +746,9 @@ Get-Content logs\runner.log -Tail 50
 
 # Search for errors
 Select-String "ERROR" logs\runner.log
+
+# Search for monitor resource telemetry
+Select-String "\[RESOURCE\]" logs\runner.log
 
 # Search for rate limit errors
 Select-String "rate limited" logs\office-docs-backup\*.log

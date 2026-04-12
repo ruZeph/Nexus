@@ -7,6 +7,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Keep native command stderr from turning expected failure tests into terminating errors.
+if ($PSVersionTable.PSVersion.Major -ge 7) {
+    $global:PSNativeCommandUseErrorActionPreference = $false
+}
+
 # Test Configuration
 $testConfig = @{
     scriptPath = Join-Path $PSScriptRoot 'Run-RcloneJobs.ps1'
@@ -99,6 +104,20 @@ function Assert-FileContains {
     }
 }
 
+function Invoke-TargetScriptForExitCode {
+    param([string[]]$Arguments)
+
+    $oldErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $testConfig.scriptPath @Arguments 2>&1 | Out-Null
+        return $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $oldErrorAction
+    }
+}
+
 # ============================================================
 # UNIT TESTS - Configuration and Structure
 # ============================================================
@@ -161,6 +180,12 @@ function Test-ScriptStructure {
     Write-TestCase "Script has internet connectivity check"
     $hasInternet = [bool]($content -match 'function Test-InternetConnectivity')
     Assert-True $hasInternet "Should have Test-InternetConnectivity function"
+
+    Write-TestCase "Script has monitor resource telemetry"
+    $hasResourceFn = [bool]($content -match 'function Write-RunnerResourceLog')
+    $hasResourceLog = [bool]($content -match '\[RESOURCE\]')
+    Assert-True $hasResourceFn "Should have Write-RunnerResourceLog function"
+    Assert-True $hasResourceLog "Should log resource telemetry entries"
 }
 
 function Test-ConfigurationExamples {
@@ -215,7 +240,7 @@ function Test-DryRunMode {
     Write-TestHeader "Integration Test: Dry-Run Mode"
 
     Write-TestCase "Script runs in dry-run mode for a single job"
-    $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $testConfig.scriptPath -JobName "office-docs-backup" -DryRun -Silent 2>&1
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $testConfig.scriptPath -JobName "office-docs-backup" -DryRun -Silent 2>&1 | Out-Null
     
     Write-Info "Exit code: $LASTEXITCODE"
     Assert-Equal 0 $LASTEXITCODE "Dry-run should complete successfully"
@@ -237,7 +262,11 @@ function Test-LogFileStructure {
             Write-TestCase "Verify log file contents"
             foreach ($logFile in $logFiles | Select-Object -First 3) {
                 $content = Get-Content -LiteralPath $logFile.FullName | Select-Object -First 5
-                Write-Info "Sample from $($logFile.Name): $(($content | Join-String -Separator ' ' -InputObject { $_ } | Select-Object -First 60))..."
+                $sample = (($content | ForEach-Object { [string]$_ }) -join ' ')
+                if ($sample.Length -gt 120) {
+                    $sample = $sample.Substring(0, 120)
+                }
+                Write-Info "Sample from $($logFile.Name): $sample..."
             }
             Write-Pass "Log files are being created with content"
         }
@@ -295,12 +324,9 @@ function Test-ConfigurationConsistency {
     $cfg = Get-Content -Raw -LiteralPath $testConfig.configPath | ConvertFrom-Json
 
     Write-TestCase "Validate chunk sizes are powers of 2"
-    $validChunkSizes = @(256, 512, 1, 2, 4, 8, 16, 32, 64, 128, 256) # in MB/KB
-    $chunkSizePattern = '(\d+)M|(\d+)K' # Extract numeric chunk sizes
-    
-    foreach ($profile in $cfg.profiles.PSObject.Properties) {
-        $profileName = $profile.Name
-        $extraArgs = $profile.Value.extraArgs
+    foreach ($profileEntry in $cfg.profiles.PSObject.Properties) {
+        $profileName = $profileEntry.Name
+        $extraArgs = $profileEntry.Value.extraArgs
         
         if ($extraArgs -and $extraArgs.IndexOf('--drive-chunk-size') -ge 0) {
             $idx = $extraArgs.IndexOf('--drive-chunk-size')
@@ -308,7 +334,6 @@ function Test-ConfigurationConsistency {
             
             if ($chunkSize -match '(\d+)([MK])') {
                 $size = [int]$matches[1]
-                $unit = $matches[2]
                 
                 # Check if size is power of 2
                 $isPowerOfTwo = ($size -band ($size - 1)) -eq 0
@@ -358,7 +383,7 @@ function Test-MutexLocking {
 
     $allJobs = @($job1, $job2)
     Write-TestCase "Wait for jobs to complete"
-    $results = Wait-Job -Job $allJobs -Timeout 30
+    Wait-Job -Job $allJobs -Timeout 30 | Out-Null
     
     $completed = @($allJobs | Where-Object { $_.State -eq 'Completed' }).Count
     Write-Info "Jobs completed: $completed/2"
@@ -433,7 +458,7 @@ function Test-LoadTesting {
 
     Write-TestCase "Wait for completion (timeout: 120s)"
     $startTime = Get-Date
-    $results = Wait-Job -Job $jobs -Timeout 120
+    Wait-Job -Job $jobs -Timeout 120 | Out-Null
     $duration = (Get-Date) - $startTime
     
     $completed = @($jobs | Where-Object { $_.State -eq 'Completed' }).Count
@@ -456,10 +481,10 @@ function Test-InvalidConfigFile {
 
     Write-TestCase "Script handles missing config file gracefully"
     $tempConfig = Join-Path $testConfig.testLogDir "missing-config.json"
-    $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $testConfig.scriptPath -ConfigPath $tempConfig -Silent 2>&1
+    $exitCode = Invoke-TargetScriptForExitCode -Arguments @('-ConfigPath', $tempConfig, '-Silent')
     
-    Write-Info "Exit code: $LASTEXITCODE"
-    Assert-True ($LASTEXITCODE -ne 0) "Should fail with missing config file"
+    Write-Info "Exit code: $exitCode"
+    Assert-True ($exitCode -ne 0) "Should fail with missing config file"
     Write-Pass "Correctly fails on missing config file"
 }
 
@@ -473,10 +498,10 @@ function Test-MalformedJsonConfig {
     $badConfig = Join-Path $tempDir "bad.json"
     Add-Content -Path $badConfig -Value '{ "jobs": [ { "name" invalid json }'
     
-    $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $testConfig.scriptPath -ConfigPath $badConfig -Silent 2>&1
+    $exitCode = Invoke-TargetScriptForExitCode -Arguments @('-ConfigPath', $badConfig, '-Silent')
     
-    Write-Info "Exit code: $LASTEXITCODE"
-    Assert-True ($LASTEXITCODE -ne 0) "Should fail with malformed JSON"
+    Write-Info "Exit code: $exitCode"
+    Assert-True ($exitCode -ne 0) "Should fail with malformed JSON"
     Write-Pass "Correctly detects invalid JSON"
     
     Remove-Item $tempDir -Recurse -Force
@@ -498,9 +523,9 @@ function Test-MissingRequiredJobField {
     } | ConvertTo-Json
     Add-Content -Path $badConfig -Value $json
     
-    $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $testConfig.scriptPath -ConfigPath $badConfig -Silent 2>&1
+    $exitCode = Invoke-TargetScriptForExitCode -Arguments @('-ConfigPath', $badConfig, '-Silent')
     
-    Assert-True ($LASTEXITCODE -ne 0) "Should fail when job missing name"
+    Assert-True ($exitCode -ne 0) "Should fail when job missing name"
     Write-Pass "Correctly rejects invalid job configuration"
     
     Remove-Item $tempDir -Recurse -Force
@@ -526,9 +551,9 @@ function Test-InvalidJobDestinationFormat {
     } | ConvertTo-Json
     Add-Content -Path $badConfig -Value $json
     
-    $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $testConfig.scriptPath -ConfigPath $badConfig -Silent 2>&1
+    $exitCode = Invoke-TargetScriptForExitCode -Arguments @('-ConfigPath', $badConfig, '-Silent')
     
-    Assert-True ($LASTEXITCODE -ne 0) "Should fail with invalid destination"
+    Assert-True ($exitCode -ne 0) "Should fail with invalid destination"
     Write-Pass "Correctly validates destination format (remote:path)"
     
     Remove-Item $tempDir -Recurse -Force
@@ -555,10 +580,10 @@ function Test-NonExistentSourceDirectory {
     } | ConvertTo-Json
     Add-Content -Path $badConfig -Value $json
     
-    $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $testConfig.scriptPath -ConfigPath $badConfig -DryRun -Silent 2>&1
+    $exitCode = Invoke-TargetScriptForExitCode -Arguments @('-ConfigPath', $badConfig, '-DryRun', '-Silent')
     
     # Should skip but exit cleanly
-    Assert-Equal 0 $LASTEXITCODE "Should skip missing source and exit cleanly"
+    Assert-Equal 0 $exitCode "Should skip missing source and exit cleanly"
     Write-Pass "Correctly skips job with missing source directory"
     
     Remove-Item $tempDir -Recurse -Force
@@ -585,9 +610,9 @@ function Test-DisabledJobsSkipped {
     } | ConvertTo-Json
     Add-Content -Path $badConfig -Value $json
     
-    $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $testConfig.scriptPath -ConfigPath $badConfig -DryRun -Silent 2>&1
+    $exitCode = Invoke-TargetScriptForExitCode -Arguments @('-ConfigPath', $badConfig, '-DryRun', '-Silent')
     
-    Assert-True ($LASTEXITCODE -ne 0) "Should exit with error when no enabled jobs"
+    Assert-True ($exitCode -ne 0) "Should exit with error when no enabled jobs"
     Write-Pass "Correctly handles all disabled jobs (exits with error)"
     
     Remove-Item $tempDir -Recurse -Force
@@ -617,10 +642,10 @@ function Test-InvalidJobName {
     } | ConvertTo-Json
     Add-Content -Path $badConfig -Value $json
     
-    $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $testConfig.scriptPath -ConfigPath $badConfig -DryRun -Silent 2>&1
+    $exitCode = Invoke-TargetScriptForExitCode -Arguments @('-ConfigPath', $badConfig, '-DryRun', '-Silent')
     
     # Should still work - log names are sanitized
-    Assert-Equal 0 $LASTEXITCODE "Should sanitize special characters in job names"
+    Assert-Equal 0 $exitCode "Should sanitize special characters in job names"
     Write-Pass "Correctly sanitizes job names for log files"
     
     Remove-Item $tempDir -Recurse -Force
@@ -792,502 +817,6 @@ function Main {
                 Test-ParallelInstances
             }
             Test-LoadTesting
-        }
-    }
-    
-    $endTime = Get-Date
-    $duration = $endTime - $startTime
-    
-    $exitCode = Write-TestReport $TestSuite
-    
-    Write-Host "  Duration: $([int]$duration.TotalSeconds)s" -ForegroundColor Gray
-    Write-Host ""
-    
-    # Cleanup test logs
-    if (-not $Verbose) {
-        Remove-Item $testConfig.testLogDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    
-    return $exitCode
-}
-
-# Execute main test suite
-exit (Main)
-
-# ============================================================
-# UTILITY FUNCTIONS
-# ============================================================
-
-function Write-TestHeader {
-    param([string]$Message)
-    Write-Host "`n$('=' * 70)" -ForegroundColor Cyan
-    Write-Host "  $Message" -ForegroundColor Cyan
-    Write-Host "$('=' * 70)" -ForegroundColor Cyan
-}
-
-function Write-TestCase {
-    param([string]$Name)
-    Write-Host "`n▶ $Name" -ForegroundColor Yellow
-}
-
-function Write-Pass {
-    param([string]$Message)
-    Write-Host "  ✓ PASS: $Message" -ForegroundColor Green
-    $testConfig.passCount++
-}
-
-function Write-Fail {
-    param([string]$Message)
-    Write-Host "  ✗ FAIL: $Message" -ForegroundColor Red
-    $testConfig.failCount++
-}
-
-function Write-Info {
-    param([string]$Message)
-    Write-Host "  ℹ $Message" -ForegroundColor Cyan
-}
-
-function Assert-Equal {
-    param([object]$Expected, [object]$Actual, [string]$Message)
-    if ($Expected -eq $Actual) {
-        Write-Pass "$Message (Expected: $Expected)"
-    } else {
-        Write-Fail "$Message (Expected: $Expected, Got: $Actual)"
-    }
-}
-
-function Assert-True {
-    param([bool]$Condition, [string]$Message)
-    if ($Condition) {
-        Write-Pass $Message
-    } else {
-        Write-Fail $Message
-    }
-}
-
-function Assert-False {
-    param([bool]$Condition, [string]$Message)
-    if (-not $Condition) {
-        Write-Pass $Message
-    } else {
-        Write-Fail $Message
-    }
-}
-
-function Assert-FileExists {
-    param([string]$Path, [string]$Message)
-    if (Test-Path -LiteralPath $Path) {
-        Write-Pass "$Message (File exists)"
-    } else {
-        Write-Fail "$Message (File not found: $Path)"
-    }
-}
-
-function Assert-FileContains {
-    param([string]$Path, [string]$Pattern, [string]$Message)
-    if (-not (Test-Path -LiteralPath $Path)) {
-        Write-Fail "$Message (File not found: $Path)"
-        return
-    }
-    $content = Get-Content -Raw -LiteralPath $Path
-    if ($content -match $Pattern) {
-        Write-Pass "$Message (Pattern found)"
-    } else {
-        Write-Fail "$Message (Pattern not found: $Pattern)"
-    }
-}
-
-# ============================================================
-# UNIT TESTS - Test Individual Functions
-# ============================================================
-
-function Test-RateLimitDetection {
-    Write-TestHeader "Unit Test: Rate Limit Detection"
-    
-    # Load the function from the main script
-    $scriptContent = Get-Content -Raw -LiteralPath $testConfig.scriptPath
-    $null = Invoke-Expression ($scriptContent -replace '(?s)try\s*\{.*', '') # Extract functions only
-
-    Write-TestCase "Test-RateLimitError detects 403 errors"
-    $testLog404 = New-TemporaryFile
-    Add-Content -Path $testLog404.FullName -Value "error: 403 Forbidden"
-    $result = Test-RateLimitError -LogFile $testLog404.FullName
-    Assert-True $result "Should detect 403 error"
-    Remove-Item $testLog404.FullName -Force
-
-    Write-TestCase "Test-RateLimitError detects 429 errors"
-    $testLog429 = New-TemporaryFile
-    Add-Content -Path $testLog429.FullName -Value "TooManyRequests: 429"
-    $result = Test-RateLimitError -LogFile $testLog429.FullName
-    Assert-True $result "Should detect 429 error"
-    Remove-Item $testLog429.FullName -Force
-
-    Write-TestCase "Test-RateLimitError detects rate limit messages"
-    $testLogMsg = New-TemporaryFile
-    Add-Content -Path $testLogMsg.FullName -Value "Rate limit exceeded"
-    $result = Test-RateLimitError -LogFile $testLogMsg.FullName
-    Assert-True $result "Should detect 'Rate limit exceeded'"
-    Remove-Item $testLogMsg.FullName -Force
-
-    Write-TestCase "Test-RateLimitError returns false for normal output"
-    $testLogOK = New-TemporaryFile
-    Add-Content -Path $testLogOK.FullName -Value "Sync completed successfully"
-    $result = Test-RateLimitError -LogFile $testLogOK.FullName
-    Assert-False $result "Should return false for normal output"
-    Remove-Item $testLogOK.FullName -Force
-
-    Write-TestCase "Test-RateLimitError handles missing files"
-    $result = Test-RateLimitError -LogFile "C:\nonexistent\file.log"
-    Assert-False $result "Should return false for missing files"
-}
-
-function Test-ConvertToPositiveInt {
-    Write-TestHeader "Unit Test: ConvertTo-PositiveInt Function"
-
-    $scriptContent = Get-Content -Raw -LiteralPath $testConfig.scriptPath
-    $null = Invoke-Expression ($scriptContent -replace '(?s)try\s*\{.*', '')
-
-    Write-TestCase "Converts valid string to integer"
-    $result = ConvertTo-PositiveInt -Value "42" -FieldName "test" -DefaultValue 10
-    Assert-Equal 42 $result "Should convert '42' to 42"
-
-    Write-TestCase "Returns default for null value"
-    $result = ConvertTo-PositiveInt -Value $null -FieldName "test" -DefaultValue 10
-    Assert-Equal 10 $result "Should return default value 10"
-
-    Write-TestCase "Returns default for empty string"
-    $result = ConvertTo-PositiveInt -Value "" -FieldName "test" -DefaultValue 10
-    Assert-Equal 10 $result "Should return default value 10"
-
-    Write-TestCase "Rejects zero value"
-    try {
-        $result = ConvertTo-PositiveInt -Value "0" -FieldName "test" -DefaultValue 10
-        Write-Fail "Should throw error for zero"
-    } catch {
-        Write-Pass "Correctly rejects zero value"
-    }
-
-    Write-TestCase "Rejects negative value"
-    try {
-        $result = ConvertTo-PositiveInt -Value "-5" -FieldName "test" -DefaultValue 10
-        Write-Fail "Should throw error for negative"
-    } catch {
-        Write-Pass "Correctly rejects negative value"
-    }
-}
-
-function Test-ConfigParsing {
-    Write-TestHeader "Unit Test: Configuration Parsing"
-
-    Write-TestCase "Config file exists and is valid JSON"
-    Assert-FileExists $testConfig.configPath "Configuration file should exist"
-    
-    try {
-        $cfg = Get-Content -Raw -LiteralPath $testConfig.configPath | ConvertFrom-Json
-        Write-Pass "Configuration is valid JSON"
-    } catch {
-        Write-Fail "Configuration is not valid JSON: $_"
-        return
-    }
-
-    Write-TestCase "Config has required sections"
-    Assert-True ($null -ne $cfg.settings) "Should have 'settings' section"
-    Assert-True ($null -ne $cfg.jobs) "Should have 'jobs' section"
-    Assert-True ($cfg.jobs.Count -gt 0) "Should have at least one job"
-
-    Write-TestCase "Jobs have required properties"
-    foreach ($job in $cfg.jobs) {
-        Assert-True (![string]::IsNullOrWhiteSpace($job.name)) "Job should have 'name'"
-        Assert-True (![string]::IsNullOrWhiteSpace($job.source)) "Job should have 'source'"
-        Assert-True (![string]::IsNullOrWhiteSpace($job.dest)) "Job should have 'dest'"
-    }
-
-    Write-TestCase "Settings have required properties"
-    Assert-True ($null -ne $cfg.settings.defaultOperation) "Should have 'defaultOperation'"
-    Assert-True ($null -ne $cfg.settings.logRetentionCount) "Should have 'logRetentionCount'"
-}
-
-function Test-LogFileGeneration {
-    Write-TestHeader "Unit Test: Log File Generation"
-
-    $scriptContent = Get-Content -Raw -LiteralPath $testConfig.scriptPath
-    $null = Invoke-Expression ($scriptContent -replace '(?s)try\s*\{.*', '')
-
-    Write-TestCase "New-JobLogFile creates proper directory structure"
-    $testLogDir = Join-Path $testConfig.testLogDir "job-test"
-    New-Item -ItemType Directory -Force -Path $testLogDir | Out-Null
-    
-    $logFile = New-JobLogFile -RootLogDir $testLogDir -JobSafeName "test-job"
-    
-    Assert-FileExists $logFile "Log file should be created"
-    Assert-True ($logFile -match '\d{8}-\d{6}\.log$') "Log file should have timestamp format"
-    
-    Remove-Item $testLogDir -Recurse -Force
-
-    Write-TestCase "Get-SafeLogName sanitizes invalid characters"
-    $scriptContent = Get-Content -Raw -LiteralPath $testConfig.scriptPath
-    $null = Invoke-Expression ($scriptContent -replace '(?s)try\s*\{.*', '')
-    
-    $safe1 = Get-SafeLogName -Name "invalid<name>here"
-    Assert-True ($safe1 -notmatch '[<>]') "Should remove invalid characters"
-    
-    $safe2 = Get-SafeLogName -Name "test:job*file?"
-    Assert-True ($safe2 -notmatch '[*?:]') "Should sanitize special characters"
-}
-
-# ============================================================
-# INTEGRATION TESTS - Test Script Features
-# ============================================================
-# PARALLEL TESTS - Test Mutex and Concurrent Execution
-# ============================================================
-
-function Test-MutexLocking {
-    Write-TestHeader "Parallel Test: Mutex Process Lock"
-
-    Write-TestCase "First instance acquires mutex and runs"
-    $job1 = Start-Job -ScriptBlock {
-        param($scriptPath)
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-            -File $scriptPath `
-            -JobName "office-docs-backup" `
-            -DryRun `
-            -Silent
-    } -ArgumentList $testConfig.scriptPath
-
-    Start-Sleep -Milliseconds 500
-
-    Write-TestCase "Second instance detects mutex and exits gracefully"
-    $job2 = Start-Job -ScriptBlock {
-        param($scriptPath)
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-            -File $scriptPath `
-            -JobName "office-docs-backup" `
-            -DryRun `
-            -Silent
-    } -ArgumentList $testConfig.scriptPath
-
-    Start-Sleep -Milliseconds 500
-
-    Write-TestCase "Wait for jobs to complete"
-    $results = Wait-Job -Job $job1, $job2 -Timeout 30
-    
-    $job1Output = Receive-Job -Job $job1 -ErrorAction SilentlyContinue
-    $job2Output = Receive-Job -Job $job2 -ErrorAction SilentlyContinue
-    
-    Write-Info "Job 1 exit code: $($job1.State)"
-    Write-Info "Job 2 exit code: $($job2.State)"
-    
-    Write-Pass "Parallel jobs executed without conflicts"
-    
-    Remove-Job -Job $job1, $job2 -Force
-}
-
-function Test-ParallelInstances {
-    Write-TestHeader "Parallel Test: Multiple Script Instances"
-
-    Write-TestCase "Spawn 3 parallel instances of the script"
-    $jobs = @()
-    for ($i = 1; $i -le 3; $i++) {
-        $job = Start-Job -ScriptBlock {
-            param($scriptPath, $instanceNum)
-            Write-Host "[Instance $instanceNum] Starting..."
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-                -File $scriptPath `
-                -JobName "office-docs-backup" `
-                -DryRun `
-                -Silent
-            Write-Host "[Instance $instanceNum] Completed with code: $LASTEXITCODE"
-        } -ArgumentList $testConfig.scriptPath, $i
-        $jobs += $job
-    }
-
-    Write-TestCase "Monitor parallel execution"
-    $completedCount = 0
-    $startTime = Get-Date
-    $timeout = 60
-
-    while ($completedCount -lt $jobs.Count) {
-        $completedCount = @($jobs | Where-Object { $_.State -eq 'Completed' }).Count
-        $elapsed = (Get-Date) - $startTime
-        Write-Info "Progress: $completedCount/$($jobs.Count) completed after $([int]$elapsed.TotalSeconds)s"
-        
-        if ($elapsed.TotalSeconds -gt $timeout) {
-            Write-Fail "Timeout waiting for parallel jobs"
-            break
-        }
-        
-        Start-Sleep -Milliseconds 500
-    }
-
-    Write-TestCase "Verify all instances completed"
-    $allCompleted = @($jobs | Where-Object { $_.State -eq 'Completed' }).Count
-    Assert-Equal $jobs.Count $allCompleted "All instances should complete"
-
-    foreach ($job in $jobs) {
-        $output = Receive-Job -Job $job -ErrorAction SilentlyContinue
-        if ($output) {
-            Write-Info "Job output: $output"
-        }
-    }
-
-    $jobs | Remove-Job -Force
-}
-
-function Test-LoadTesting {
-    Write-TestHeader "Parallel Test: Load Testing (5 concurrent instances)"
-
-    Write-TestCase "Spawn 5 concurrent instances"
-    $jobs = @()
-    $instanceCount = if ($QuickTest) { 2 } else { 5 }
-    
-    for ($i = 1; $i -le $instanceCount; $i++) {
-        $job = Start-Job -ScriptBlock {
-            param($scriptPath, $instanceNum)
-            $random = Get-Random -Minimum 100 -Maximum 1000
-            Start-Sleep -Milliseconds $random  # Random start offset
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-                -File $scriptPath `
-                -JobName "office-docs-backup" `
-                -DryRun `
-                -Silent 2>&1 | Out-Null
-        } -ArgumentList $testConfig.scriptPath, $i
-        $jobs += $job
-    }
-
-    Write-TestCase "Wait for completion (timeout: 120s)"
-    $results = Wait-Job -Job $jobs -Timeout 120
-    
-    $completed = @($jobs | Where-Object { $_.State -eq 'Completed' }).Count
-    Write-Info "Completed: $completed/$instanceCount instances"
-    
-    $failed = @($jobs | Where-Object { $_.State -eq 'Failed' }).Count
-    Write-Info "Failed: $failed/$instanceCount instances"
-    
-    Assert-True ($completed -ge ($instanceCount - 1)) "At least $($instanceCount - 1) instances should complete"
-
-    $jobs | Remove-Job -Force
-}
-
-# ============================================================
-# PERFORMANCE TESTS
-# ============================================================
-
-function Test-PerformanceMetrics {
-    Write-TestHeader "Performance Test: Execution Metrics"
-
-    Write-TestCase "Measure dry-run execution time"
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-        -File $testConfig.scriptPath `
-        -JobName "office-docs-backup" `
-        -DryRun `
-        -Silent | Out-Null
-    $sw.Stop()
-
-    Write-Info "Dry-run execution time: $($sw.ElapsedMilliseconds)ms"
-    Assert-True ($sw.ElapsedMilliseconds -lt 30000) "Dry-run should complete in under 30 seconds"
-
-    Write-TestCase "Measure job interval logic (5 jobs with 5s intervals)"
-    $cfg = Get-Content -Raw -LiteralPath $testConfig.configPath | ConvertFrom-Json
-    
-    if ($cfg.jobs.Count -ge 2) {
-        Write-Info "Testing with $($cfg.jobs.Count) configured jobs"
-        
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-            -File $testConfig.scriptPath `
-            -DryRun `
-            -Silent | Out-Null
-        $sw.Stop()
-        
-        Write-Info "Full dry-run execution time: $($sw.ElapsedMilliseconds)ms"
-    }
-}
-
-# ============================================================
-# REPORT GENERATION
-# ============================================================
-
-function Write-TestReport {
-    param([string]$SuiteName)
-    
-    Write-TestHeader "Test Results"
-    
-    $total = $testConfig.passCount + $testConfig.failCount
-    $passRate = if ($total -gt 0) { [math]::Round(($testConfig.passCount / $total) * 100, 2) } else { 0 }
-    
-    Write-Host ""
-    Write-Host "  Test Suite: $SuiteName" -ForegroundColor Cyan
-    Write-Host "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Gray
-    Write-Host "  Passed:     $($testConfig.passCount)" -ForegroundColor Green
-    Write-Host "  Failed:     $($testConfig.failCount)" -ForegroundColor $(if ($testConfig.failCount -eq 0) { 'Green' } else { 'Red' })
-    Write-Host "  Total:      $total"
-    Write-Host "  Pass Rate:  $passRate%"
-    Write-Host ""
-    
-    if ($testConfig.failCount -eq 0) {
-        Write-Host "  ✓ All tests passed!" -ForegroundColor Green
-        return 0
-    } else {
-        Write-Host "  ✗ Some tests failed" -ForegroundColor Red
-        return 1
-    }
-}
-
-# ============================================================
-# MAIN TEST EXECUTION
-# ============================================================
-
-function Main {
-    $startTime = Get-Date
-    
-    Write-Host "`n" + ("=" * 70) -ForegroundColor Cyan
-    Write-Host "  RCLONE BACKUP JOBS - AUTOMATED TEST SUITE" -ForegroundColor Cyan
-    Write-Host "  $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Cyan
-    Write-Host ("=" * 70) -ForegroundColor Cyan
-    
-    # Create test directory
-    New-Item -ItemType Directory -Force -Path $testConfig.testLogDir | Out-Null
-    
-    # Run selected test suites
-    switch ($TestSuite) {
-        'Unit' {
-            Test-RateLimitDetection
-            Test-ConvertToPositiveInt
-            Test-ConfigParsing
-            Test-LogFileGeneration
-        }
-        'Integration' {
-            Test-ScriptValidation
-            Test-DryRunMode
-            Test-LogFileStructure
-            Test-PerformanceMetrics
-        }
-        'Parallel' {
-            if ($QuickTest) {
-                Test-MutexLocking
-            } else {
-                Test-MutexLocking
-                Test-ParallelInstances
-                Test-LoadTesting
-            }
-        }
-        'All' {
-            Test-RateLimitDetection
-            Test-ConvertToPositiveInt
-            Test-ConfigParsing
-            Test-LogFileGeneration
-            
-            Test-ScriptValidation
-            Test-DryRunMode
-            Test-LogFileStructure
-            Test-PerformanceMetrics
-            
-            if (-not $QuickTest) {
-                Test-MutexLocking
-                Test-ParallelInstances
-                Test-LoadTesting
-            }
         }
     }
     

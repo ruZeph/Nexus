@@ -41,6 +41,53 @@ function Write-RunnerLog {
     Write-JobLog -LogFile $runnerLog -Message $Message
 }
 
+function Write-RunnerSessionSeparator {
+    param(
+        [Parameter(Mandatory = $true)][string]$LogDir
+    )
+
+    $separator = '............................................................'
+    Write-JobLog -LogFile (Join-Path $LogDir 'runner.log') -Message $separator
+    Write-JobLog -LogFile (Join-Path $LogDir 'runner-error.log') -Message $separator
+}
+
+function Write-RunnerResourceLog {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$State,
+        [Parameter(Mandatory = $true)][string]$LogDir,
+        [string]$Context = 'monitor-loop'
+    )
+
+    try {
+        $proc = Get-Process -Id $PID -ErrorAction Stop
+        $now = Get-Date
+        $cpuTotalSec = $proc.TotalProcessorTime.TotalSeconds
+        $cpuPct = 0.0
+
+        if ($State.ContainsKey('LastSampleTime') -and $State.ContainsKey('LastCpuSeconds')) {
+            $elapsedSec = ($now - $State.LastSampleTime).TotalSeconds
+            if ($elapsedSec -gt 0) {
+                $deltaCpuSec = $cpuTotalSec - [double]$State.LastCpuSeconds
+                $cores = [math]::Max([Environment]::ProcessorCount, 1)
+                $cpuPct = [math]::Round((($deltaCpuSec / ($elapsedSec * $cores)) * 100), 2)
+            }
+        }
+
+        $workingMb = [math]::Round($proc.WorkingSet64 / 1MB, 2)
+        $privateMb = [math]::Round($proc.PrivateMemorySize64 / 1MB, 2)
+        $threads = $proc.Threads.Count
+        $handles = $proc.HandleCount
+
+        Write-RunnerLog -LogDir $LogDir -Message "[RESOURCE] context=$Context cpu_pct=$cpuPct working_set_mb=$workingMb private_mb=$privateMb handles=$handles threads=$threads"
+
+        $State['LastSampleTime'] = $now
+        $State['LastCpuSeconds'] = $cpuTotalSec
+    }
+    catch {
+        Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to collect resource metrics ($Context): $_"
+    }
+}
+
 function Write-ShellMessage {
     param(
         [Parameter(Mandatory = $true)][string]$Message,
@@ -427,6 +474,146 @@ function Update-FolderJobMapping {
     return @{ JobMap = $folderJobMap; Folders = $watchedFolders }
 }
 
+function Add-FolderWatcher {
+    param(
+        [Parameter(Mandatory = $true)][string]$FolderPath,
+        [Parameter(Mandatory = $true)][hashtable]$Watchers,
+        [Parameter(Mandatory = $true)][hashtable]$WatcherSync,
+        [Parameter(Mandatory = $true)][string]$LogDir,
+        [bool]$IsSilent = $false
+    )
+
+    if ($Watchers.ContainsKey($FolderPath)) {
+        return
+    }
+
+    try {
+        $watcher = [System.IO.FileSystemWatcher]::new($FolderPath)
+        $watcher.IncludeSubdirectories = $true
+        $watcher.NotifyFilter = [System.IO.NotifyFilters]::FileName -bor
+            [System.IO.NotifyFilters]::DirectoryName -bor
+            [System.IO.NotifyFilters]::LastWrite -bor
+            [System.IO.NotifyFilters]::Size -bor
+            [System.IO.NotifyFilters]::CreationTime
+
+        $eventData = @{
+            FolderPath = $FolderPath
+            WatcherSync = $WatcherSync
+        }
+
+        $subs = @(
+            (Register-ObjectEvent -InputObject $watcher -EventName Changed -MessageData $eventData -Action {
+                $sync = $event.MessageData.WatcherSync
+                $folder = [string]$event.MessageData.FolderPath
+                $args = $event.SourceEventArgs
+                if ($null -ne $sync -and -not [string]::IsNullOrWhiteSpace($folder)) {
+                    $sync.ChangedFolders[$folder] = [pscustomobject]@{
+                        Time = Get-Date
+                        ChangeType = [string]$args.ChangeType
+                        FullPath = [string]$args.FullPath
+                        OldFullPath = ''
+                    }
+                }
+            })
+            (Register-ObjectEvent -InputObject $watcher -EventName Created -MessageData $eventData -Action {
+                $sync = $event.MessageData.WatcherSync
+                $folder = [string]$event.MessageData.FolderPath
+                $args = $event.SourceEventArgs
+                if ($null -ne $sync -and -not [string]::IsNullOrWhiteSpace($folder)) {
+                    $sync.ChangedFolders[$folder] = [pscustomobject]@{
+                        Time = Get-Date
+                        ChangeType = [string]$args.ChangeType
+                        FullPath = [string]$args.FullPath
+                        OldFullPath = ''
+                    }
+                }
+            })
+            (Register-ObjectEvent -InputObject $watcher -EventName Deleted -MessageData $eventData -Action {
+                $sync = $event.MessageData.WatcherSync
+                $folder = [string]$event.MessageData.FolderPath
+                $args = $event.SourceEventArgs
+                if ($null -ne $sync -and -not [string]::IsNullOrWhiteSpace($folder)) {
+                    $sync.ChangedFolders[$folder] = [pscustomobject]@{
+                        Time = Get-Date
+                        ChangeType = [string]$args.ChangeType
+                        FullPath = [string]$args.FullPath
+                        OldFullPath = ''
+                    }
+                }
+            })
+            (Register-ObjectEvent -InputObject $watcher -EventName Renamed -MessageData $eventData -Action {
+                $sync = $event.MessageData.WatcherSync
+                $folder = [string]$event.MessageData.FolderPath
+                $args = $event.SourceEventArgs
+                if ($null -ne $sync -and -not [string]::IsNullOrWhiteSpace($folder)) {
+                    $sync.ChangedFolders[$folder] = [pscustomobject]@{
+                        Time = Get-Date
+                        ChangeType = [string]$args.ChangeType
+                        FullPath = [string]$args.FullPath
+                        OldFullPath = [string]$args.OldFullPath
+                    }
+                }
+            })
+        )
+
+        $watcher.EnableRaisingEvents = $true
+        $Watchers[$FolderPath] = [pscustomobject]@{
+            Watcher = $watcher
+            Subscriptions = $subs
+        }
+
+        $msg = "FileSystemWatcher enabled: $FolderPath"
+        Write-RunnerLog -LogDir $LogDir -Message $msg
+        Write-ShellMessage -Message $msg -IsSilent $IsSilent
+    }
+    catch {
+        Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to enable FileSystemWatcher for '$FolderPath': $_"
+    }
+}
+
+function Remove-FolderWatcher {
+    param(
+        [Parameter(Mandatory = $true)][string]$FolderPath,
+        [Parameter(Mandatory = $true)][hashtable]$Watchers,
+        [Parameter(Mandatory = $true)][string]$LogDir
+    )
+
+    if (-not $Watchers.ContainsKey($FolderPath)) {
+        return
+    }
+
+    $entry = $Watchers[$FolderPath]
+
+    foreach ($subscription in @($entry.Subscriptions)) {
+        try {
+            if ($subscription.PSObject.Properties.Name -contains 'SourceIdentifier' -and $subscription.SourceIdentifier) {
+                Unregister-Event -SourceIdentifier $subscription.SourceIdentifier -ErrorAction SilentlyContinue
+                Get-Job -Name $subscription.SourceIdentifier -ErrorAction SilentlyContinue | Remove-Job -Force -ErrorAction SilentlyContinue
+            }
+            elseif ($subscription.PSObject.Properties.Name -contains 'SubscriptionId' -and $null -ne $subscription.SubscriptionId) {
+                Unregister-Event -SubscriptionId $subscription.SubscriptionId -ErrorAction SilentlyContinue
+            }
+
+            if ($subscription.PSObject.Properties.Name -contains 'Id' -and $null -ne $subscription.Id) {
+                Remove-Job -Id $subscription.Id -Force -ErrorAction SilentlyContinue
+            }
+        }
+        catch {
+            Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to remove watcher subscription for '$FolderPath': $_"
+        }
+    }
+
+    try {
+        $entry.Watcher.EnableRaisingEvents = $false
+        $entry.Watcher.Dispose()
+    }
+    catch {
+        Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to dispose watcher for '$FolderPath': $_"
+    }
+
+    $Watchers.Remove($FolderPath) | Out-Null
+}
+
 function Start-FolderMonitoring {
     param(
         [Parameter(Mandatory = $true)]$Config,
@@ -439,7 +626,16 @@ function Start-FolderMonitoring {
     )
 
     # Build initial folder-to-jobs mapping
-    $mapping = Update-FolderJobMapping -Config $Config -LogDir $LogDir -IsSilent $IsSilent
+    $mapping = @(
+        Update-FolderJobMapping -Config $Config -LogDir $LogDir -IsSilent $IsSilent
+    ) | Where-Object {
+        $_ -is [hashtable] -and $_.ContainsKey('JobMap') -and $_.ContainsKey('Folders')
+    } | Select-Object -Last 1
+
+    if ($null -eq $mapping) {
+        throw 'Failed to build folder-job mapping for monitor mode.'
+    }
+
     $folderJobMap = $mapping.JobMap
     $watchedFolders = $mapping.Folders
     
@@ -456,7 +652,9 @@ function Start-FolderMonitoring {
                     $folderJobMap[$resolvedPath] = @()
                     $watchedFolders += $resolvedPath
                 }
-                $folderJobMap[$resolvedPath] += $jobName
+                if ($jobName -notin @($folderJobMap[$resolvedPath])) {
+                    $folderJobMap[$resolvedPath] += $jobName
+                }
                 $msg = "Monitoring folder: $resolvedPath -> job: $jobName"
                 Write-RunnerLog -LogDir $LogDir -Message $msg
                 Write-ShellMessage -Message $msg -IsSilent $IsSilent
@@ -470,6 +668,13 @@ function Start-FolderMonitoring {
     if ($watchedFolders.Count -eq 0) {
         throw "No valid source folders found to monitor."
     }
+
+    # Hybrid mode: FileSystemWatcher gives low-latency signals, polling snapshot remains a reliability fallback.
+    $watchers = @{}
+    $watcherSync = [hashtable]::Synchronized(@{ ChangedFolders = [hashtable]::Synchronized(@{}) })
+    $resourceState = @{}
+    $resourceLogInterval = 60
+    $resourceLastLog = Get-Date
 
     # Track folder snapshots so only real content changes trigger jobs
     $folderState = @{}
@@ -487,6 +692,7 @@ function Start-FolderMonitoring {
                 PendingChange = $false
                 ErrorCount = 0
             }
+            Add-FolderWatcher -FolderPath $folder -Watchers $watchers -WatcherSync $watcherSync -LogDir $LogDir -IsSilent $IsSilent
         } else {
             Write-RunnerLog -LogDir $LogDir -Message "Warning: Cannot access folder initially: $folder"
         }
@@ -495,11 +701,17 @@ function Start-FolderMonitoring {
     $msg = "Folder monitoring started. Watching $($watchedFolders.Count) folder(s) with ${IdleTimeSeconds}s idle time."
     Write-RunnerLog -LogDir $LogDir -Message $msg
     Write-ShellMessage -Message $msg -IsSilent $IsSilent
+    Write-RunnerResourceLog -State $resourceState -LogDir $LogDir -Context 'monitor-start'
 
     try {
         while ($true) {
             Start-Sleep -Seconds 5
             $now = Get-Date
+
+            if ((($now - $resourceLastLog).TotalSeconds) -ge $resourceLogInterval) {
+                Write-RunnerResourceLog -State $resourceState -LogDir $LogDir -Context 'monitor-loop'
+                $resourceLastLog = $now
+            }
             
             # Dynamic config reload: Check if config changed
             $timeSinceLastCheck = ($now - $configLastCheck).TotalSeconds
@@ -510,9 +722,44 @@ function Start-FolderMonitoring {
                     if ($null -ne $currentModTime -and $currentModTime -gt $lastConfigModTime) {
                         $lastConfigModTime = $currentModTime
                         $newConfig = Get-Content -Raw -LiteralPath $ConfigPath -ErrorAction Stop | ConvertFrom-Json
-                        $mapping = Update-FolderJobMapping -Config $newConfig -LogDir $LogDir -IsSilent $IsSilent -ExistingMap $folderJobMap
+                        $mapping = @(
+                            Update-FolderJobMapping -Config $newConfig -LogDir $LogDir -IsSilent $IsSilent -ExistingMap $folderJobMap
+                        ) | Where-Object {
+                            $_ -is [hashtable] -and $_.ContainsKey('JobMap') -and $_.ContainsKey('Folders')
+                        } | Select-Object -Last 1
+
+                        if ($null -eq $mapping) {
+                            throw 'Failed to rebuild folder-job mapping from reloaded config.'
+                        }
+
                         $folderJobMap = $mapping.JobMap
                         $watchedFolders = $mapping.Folders
+
+                        # Add state/watchers for newly introduced folders.
+                        foreach ($newFolder in @($watchedFolders | Where-Object { -not $folderState.ContainsKey($_) })) {
+                            $newSnapshot = Get-FolderSnapshotSignature -FolderPath $newFolder
+                            if ($newSnapshot -in @('ERROR_ACCESS', 'ERROR_READ')) {
+                                Write-RunnerLog -LogDir $LogDir -Message "Warning: Cannot access newly added folder: $newFolder"
+                                continue
+                            }
+
+                            $folderState[$newFolder] = [pscustomobject]@{
+                                Snapshot = $newSnapshot
+                                LastChange = $null
+                                PendingChange = $false
+                                ErrorCount = 0
+                            }
+                            Add-FolderWatcher -FolderPath $newFolder -Watchers $watchers -WatcherSync $watcherSync -LogDir $LogDir -IsSilent $IsSilent
+                        }
+
+                        # Remove state/watchers for folders no longer configured.
+                        foreach ($removedFolder in @($folderState.Keys | Where-Object { $_ -notin $watchedFolders })) {
+                            Remove-FolderWatcher -FolderPath $removedFolder -Watchers $watchers -LogDir $LogDir
+                            $folderState.Remove($removedFolder) | Out-Null
+                            if ($watcherSync.ChangedFolders.ContainsKey($removedFolder)) {
+                                $watcherSync.ChangedFolders.Remove($removedFolder) | Out-Null
+                            }
+                        }
                     }
                 }
                 catch {
@@ -525,6 +772,8 @@ function Start-FolderMonitoring {
                 if ($null -eq $state) {
                     continue
                 }
+
+                $watcherEvent = $null
 
                 # Check if folder still exists and is accessible
                 if (-not (Test-Path -LiteralPath $folder -ErrorAction SilentlyContinue)) {
@@ -540,6 +789,29 @@ function Start-FolderMonitoring {
                 
                 $state.ErrorCount = 0
 
+                if ($watcherSync.ChangedFolders.ContainsKey($folder)) {
+                    $watcherEvent = $watcherSync.ChangedFolders[$folder]
+                    $state.LastChange = $now
+                    $state.PendingChange = $true
+                    $watcherSync.ChangedFolders.Remove($folder) | Out-Null
+
+                    $changeType = [string](Get-ConfigProperty -Object $watcherEvent -Name 'ChangeType')
+                    $fullPath = [string](Get-ConfigProperty -Object $watcherEvent -Name 'FullPath')
+                    $oldFullPath = [string](Get-ConfigProperty -Object $watcherEvent -Name 'OldFullPath')
+
+                    if ([string]::IsNullOrWhiteSpace($changeType)) { $changeType = 'Changed' }
+                    if ([string]::IsNullOrWhiteSpace($fullPath)) { $fullPath = $folder }
+
+                    if ($changeType -eq 'Renamed' -and -not [string]::IsNullOrWhiteSpace($oldFullPath)) {
+                        $msg = "Change detected by watcher: $folder [$changeType] $oldFullPath -> $fullPath"
+                    } else {
+                        $msg = "Change detected by watcher: $folder [$changeType] $fullPath"
+                    }
+
+                    Write-RunnerLog -LogDir $LogDir -Message $msg
+                    Write-ShellMessage -Message $msg -IsSilent $IsSilent
+                }
+
                 $currentSnapshot = Get-FolderSnapshotSignature -FolderPath $folder
                 
                 if ($currentSnapshot -in @('ERROR_ACCESS', 'ERROR_READ')) {
@@ -552,12 +824,14 @@ function Start-FolderMonitoring {
                 
                 if ($currentSnapshot -ne $state.Snapshot) {
                     $state.Snapshot = $currentSnapshot
-                    $state.LastChange = $now
-                    $state.PendingChange = $true
+                    if ($null -eq $watcherEvent) {
+                        $state.LastChange = $now
+                        $state.PendingChange = $true
 
-                    $msg = "Change detected in folder: $folder"
-                    Write-RunnerLog -LogDir $LogDir -Message $msg
-                    Write-ShellMessage -Message $msg -IsSilent $IsSilent
+                        $msg = "Change detected in folder: $folder [snapshot-diff]"
+                        Write-RunnerLog -LogDir $LogDir -Message $msg
+                        Write-ShellMessage -Message $msg -IsSilent $IsSilent
+                    }
                 }
 
                 if (-not $state.PendingChange) {
@@ -569,7 +843,7 @@ function Start-FolderMonitoring {
                     continue
                 }
 
-                $jobs = @($folderJobMap[$folder])
+                $jobs = @($folderJobMap[$folder] | Select-Object -Unique)
                 if ($jobs.Count -eq 0) {
                     continue
                 }
@@ -627,6 +901,10 @@ function Start-FolderMonitoring {
         }
     }
     finally {
+        foreach ($folderPath in @($watchers.Keys)) {
+            Remove-FolderWatcher -FolderPath $folderPath -Watchers $watchers -LogDir $LogDir
+        }
+
         $msg = "Folder monitoring stopped."
         Write-RunnerLog -LogDir $LogDir -Message $msg
     }
@@ -635,6 +913,7 @@ function Start-FolderMonitoring {
 try {
     $logDir = Join-Path $PSScriptRoot 'logs'
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    Write-RunnerSessionSeparator -LogDir $logDir
 
     if (-not $mutex.WaitOne(0)) {
         Write-RunnerLog -LogDir $logDir -Message 'Another runner instance is already active. Exiting.'
