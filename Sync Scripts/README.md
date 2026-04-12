@@ -43,6 +43,8 @@ What the quick-start script handles:
 - PowerShell version validation
 - rclone presence check and installation attempt (winget/choco)
 - setup file download with retries
+- blank config generation by default (does not copy repository config)
+- optional repository config copy via switch
 - existing config protection (unless force overwrite)
 - rclone remote existence check
 - optional launch of interactive job configuration helper
@@ -59,12 +61,20 @@ Folder layout created by setup:
 
 ```text
 <install-path>
-|-- Run-RcloneJobs.ps1
-|-- Test-RcloneJobs.ps1
-|-- New-RcloneJobConfig.ps1
+|-- src/
+|   `-- Run-RcloneJobs.ps1
+|-- tools/
+|   |-- Test-RcloneJobs.ps1
+|   `-- New-RcloneJobConfig.ps1
 |-- backup-jobs.json
 |-- README.md
 `-- logs/
+```
+
+Create config from repository sample only when needed:
+
+```powershell
+iex "& { $(irm 'https://raw.githubusercontent.com/ruZeph/Nexus/main/Sync%20Scripts/quick-start.ps1') } -CopyRepoConfig"
 ```
 
 Optional direct invocation form:
@@ -132,19 +142,19 @@ Minimal example:
 ### 3. Dry Run
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -DryRun
+powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -DryRun
 ```
 
 ### 4. Run Once
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1
 ```
 
 ### 5. Start Monitor Mode
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 10
+powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 10
 ```
 
 ## Configuration Guide
@@ -158,7 +168,7 @@ Use New-RcloneJobConfig.ps1 to create or update backup-jobs.json safely.
 #### Interactive Mode
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\New-RcloneJobConfig.ps1 -ConfigPath .\backup-jobs.json -Interactive
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\New-RcloneJobConfig.ps1 -ConfigPath .\backup-jobs.json -Interactive
 ```
 
 Interactive mode includes:
@@ -174,7 +184,7 @@ Interactive mode includes:
 #### Non-Interactive Mode
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\New-RcloneJobConfig.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\New-RcloneJobConfig.ps1 `
   -ConfigPath .\backup-jobs.json `
   -JobName documents-backup `
   -Source C:/path/to/documents `
@@ -201,9 +211,17 @@ Non-interactive arguments:
 
 #### How Quick Start Uses The Helper
 
-- quick-start.ps1 downloads New-RcloneJobConfig.ps1
+- quick-start.ps1 downloads New-RcloneJobConfig.ps1 into tools/
 - it can launch the helper interactively during setup
 - this ensures first-run config is validated before execution
+
+#### Validation Rules Enforced By Helper
+
+- source path must exist and is stored as resolved absolute path
+- destination must be remote:path and remote must exist in rclone listremotes
+- job name allows only letters, numbers, dot, underscore, and hyphen
+- interval must be a non-negative integer
+- duplicate job names require -Force to replace
 
 ### Root Structure
 
@@ -442,27 +460,27 @@ Select-String -Path logs/runner.log -Pattern "\[JOB RESULT\]"
 
 | Task | Command |
 | --- | --- |
-| Run eligible jobs | powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 |
-| Force all jobs | powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -Force |
-| Dry-run validation | powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -DryRun |
-| Silent execution | powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -Silent |
-| Custom config path | powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -ConfigPath .\backup-jobs.json |
+| Run eligible jobs | powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 |
+| Force all jobs | powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -Force |
+| Dry-run validation | powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -DryRun |
+| Silent execution | powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -Silent |
+| Custom config path | powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -ConfigPath .\backup-jobs.json |
 
 ```powershell
 # Run all eligible jobs now
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1
 
 # Force all jobs regardless of interval
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -Force
+powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -Force
 
 # Validate config and command construction only
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -DryRun
+powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -DryRun
 
 # Silent mode for schedulers
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -Silent
+powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -Silent
 
 # Custom configuration file
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -ConfigPath .\backup-jobs.json
+powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -ConfigPath .\backup-jobs.json
 ```
 
 ### Exit Codes
@@ -478,13 +496,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -Config
 Run the test suite:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Test-RcloneJobs.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-RcloneJobs.ps1
 ```
 
 Quick tests:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Test-RcloneJobs.ps1 -Quick
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-RcloneJobs.ps1 -Quick
 ```
 
 ## Troubleshooting

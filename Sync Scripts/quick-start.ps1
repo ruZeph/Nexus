@@ -5,6 +5,7 @@ param(
     [string]$RepoBranch = 'main',
     [switch]$SkipRcloneInstall,
     [switch]$ConfigureJob,
+    [switch]$CopyRepoConfig,
     [switch]$Force
 )
 
@@ -141,6 +142,53 @@ function Initialize-InstallLayout {
     }
 
     New-Item -ItemType Directory -Force -Path (Join-Path $Path 'logs') | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $Path 'src') | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $Path 'tools') | Out-Null
+}
+
+function New-BlankConfig {
+    return [pscustomobject]@{
+        settings = [pscustomobject]@{
+            continueOnJobError = $true
+            defaultOperation = 'sync'
+            logRetentionCount = 10
+            jobIntervalSeconds = 30
+            defaultExtraArgs = @('--retries', '15', '--retries-sleep', '30s')
+        }
+        profiles = [pscustomobject]@{
+            default = [pscustomobject]@{
+                operation = 'sync'
+                extraArgs = @('--fast-list', '--transfers', '8')
+            }
+        }
+        jobs = @()
+    }
+}
+
+function Initialize-ConfigFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$ConfigPath,
+        [Parameter(Mandatory = $true)][string]$ConfigUrl,
+        [switch]$CopySample,
+        [switch]$Overwrite
+    )
+
+    if ((Test-Path -LiteralPath $ConfigPath) -and -not $Overwrite) {
+        Write-Info "Keeping existing config file: $ConfigPath"
+        return
+    }
+
+    if ($CopySample) {
+        Write-Info 'Creating config from repository sample (explicitly requested).'
+        Invoke-DownloadFile -Uri $ConfigUrl -OutFile $ConfigPath
+        Write-Ok "Saved: $ConfigPath"
+        return
+    }
+
+    Write-Info 'Creating blank starter config (default behavior).'
+    $blank = New-BlankConfig
+    $blank | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $ConfigPath -Encoding UTF8
+    Write-Ok "Saved: $ConfigPath"
 }
 
 function Initialize-Rclone {
@@ -243,26 +291,29 @@ try {
 
     $baseUrl = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/$RepoBranch/Sync%20Scripts"
     $files = @(
-        @{ Name = 'Run-RcloneJobs.ps1'; Required = $true },
-        @{ Name = 'Test-RcloneJobs.ps1'; Required = $true },
-        @{ Name = 'New-RcloneJobConfig.ps1'; Required = $true },
-        @{ Name = 'README.md'; Required = $false },
-        @{ Name = 'backup-jobs.json'; Required = $false }
+        @{ Source = 'src/Run-RcloneJobs.ps1'; Required = $true; Target = 'src/Run-RcloneJobs.ps1' },
+        @{ Source = 'tools/Test-RcloneJobs.ps1'; Required = $true; Target = 'tools/Test-RcloneJobs.ps1' },
+        @{ Source = 'tools/New-RcloneJobConfig.ps1'; Required = $true; Target = 'tools/New-RcloneJobConfig.ps1' },
+        @{ Source = 'README.md'; Required = $false; Target = 'README.md' }
     )
 
     Write-Step 'Downloading setup files'
     foreach ($file in $files) {
-        $targetPath = Join-Path $InstallPath $file.Name
+        $targetPath = Join-Path $InstallPath $file.Target
         $exists = Test-Path -LiteralPath $targetPath
 
-        if ($exists -and -not $Force -and $file.Name -eq 'backup-jobs.json') {
-            Write-Info "Keeping existing config file: $targetPath"
+        if ($exists -and -not $Force) {
+            Write-Info "Keeping existing file: $targetPath"
             continue
         }
 
-        $url = "$baseUrl/$($file.Name)"
-        Write-Info "Downloading $($file.Name)"
+        $url = "$baseUrl/$($file.Source)"
+        Write-Info "Downloading $($file.Source)"
         try {
+            $targetDir = Split-Path -Parent $targetPath
+            if (-not [string]::IsNullOrWhiteSpace($targetDir)) {
+                New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+            }
             Invoke-DownloadFile -Uri $url -OutFile $targetPath
             Write-Ok "Saved: $targetPath"
         }
@@ -274,10 +325,13 @@ try {
         }
     }
 
+    $configPath = Join-Path $InstallPath 'backup-jobs.json'
+    $configUrl = "$baseUrl/backup-jobs.json"
+    Initialize-ConfigFile -ConfigPath $configPath -ConfigUrl $configUrl -CopySample:$CopyRepoConfig -Overwrite:$Force
+
     Initialize-RcloneRemote
 
-    $configPath = Join-Path $InstallPath 'backup-jobs.json'
-    $helperPath = Join-Path $InstallPath 'New-RcloneJobConfig.ps1'
+    $helperPath = Join-Path $InstallPath 'tools/New-RcloneJobConfig.ps1'
 
     $runHelper = $ConfigureJob
     if (-not $runHelper -and [Environment]::UserInteractive) {
@@ -299,8 +353,9 @@ try {
     Write-Host ''
     Write-Host 'Next commands:' -ForegroundColor Cyan
     Write-Host "  cd `"$InstallPath`""
-    Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -DryRun'
-    Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File .\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 10'
+    Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -DryRun'
+    Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File .\src\Run-RcloneJobs.ps1 -Monitor -IdleTimeSeconds 10'
+    Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\New-RcloneJobConfig.ps1 -ConfigPath .\backup-jobs.json -Interactive'
 }
 catch {
     Write-Host "[ERROR] $($_.Exception.Message)" -ForegroundColor Red

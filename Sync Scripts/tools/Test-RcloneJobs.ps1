@@ -7,6 +7,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$repoRoot = Split-Path -Parent $PSScriptRoot
+
 # Keep native command stderr from turning expected failure tests into terminating errors.
 if ($PSVersionTable.PSVersion.Major -ge 7) {
     $global:PSNativeCommandUseErrorActionPreference = $false
@@ -14,9 +16,9 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
 
 # Test Configuration
 $testConfig = @{
-    scriptPath = Join-Path $PSScriptRoot 'Run-RcloneJobs.ps1'
-    configPath = Join-Path $PSScriptRoot 'backup-jobs.json'
-    testLogDir = Join-Path $PSScriptRoot 'test-logs'
+    scriptPath = Join-Path $repoRoot 'src/Run-RcloneJobs.ps1'
+    configPath = Join-Path $repoRoot 'backup-jobs.json'
+    testLogDir = Join-Path $repoRoot 'test-logs'
     failCount = 0
     passCount = 0
 }

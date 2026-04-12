@@ -15,6 +15,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$script:KnownRcloneRemotes = @()
+
 function Write-Info {
     param([string]$Message)
     Write-Host "[INFO] $Message" -ForegroundColor Cyan
@@ -33,6 +35,54 @@ function Write-Ok {
 function Test-RcloneDestFormat {
     param([string]$Value)
     return $Value -match '^[^:]+:.+'
+}
+
+function Get-RcloneRemotes {
+    $cmd = Get-Command rclone -ErrorAction SilentlyContinue
+    if ($null -eq $cmd) {
+        $cmd = Get-Command rclone.exe -ErrorAction SilentlyContinue
+    }
+    if ($null -eq $cmd) {
+        throw 'rclone was not found in PATH. Install rclone before configuring jobs.'
+    }
+
+    $raw = & $cmd.Source 'listremotes' 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Failed to read rclone remotes. Run `rclone config` and try again.'
+    }
+
+    return @($raw | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
+
+function Test-JobName {
+    param([string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        return $false
+    }
+    return $Name -match '^[a-zA-Z0-9._-]+$'
+}
+
+function Resolve-SourcePath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw 'Source path is required.'
+    }
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        throw "Source path does not exist or is not a directory: $Path"
+    }
+
+    return (Resolve-Path -LiteralPath $Path).ProviderPath
+}
+
+function Test-RemoteExists {
+    param([string]$Dest)
+    if (-not (Test-RcloneDestFormat -Value $Dest)) {
+        return $false
+    }
+
+    $remoteName = ($Dest -split ':', 2)[0] + ':'
+    return @($script:KnownRcloneRemotes) -contains $remoteName
 }
 
 function Set-MissingProperty {
@@ -151,13 +201,11 @@ function Add-ValidatedJob {
         throw 'Job name is required.'
     }
 
-    if ([string]::IsNullOrWhiteSpace($JobSource)) {
-        throw "Job '$Name' requires source."
+    if (-not (Test-JobName -Name $Name)) {
+        throw "Job '$Name' has invalid name. Use letters, numbers, dot, underscore, or hyphen only."
     }
 
-    if (-not (Test-Path -LiteralPath $JobSource -PathType Container)) {
-        throw "Job '$Name' source path does not exist or is not a directory: $JobSource"
-    }
+    $resolvedSource = Resolve-SourcePath -Path $JobSource
 
     if ([string]::IsNullOrWhiteSpace($JobDest)) {
         throw "Job '$Name' requires dest."
@@ -165,6 +213,12 @@ function Add-ValidatedJob {
 
     if (-not (Test-RcloneDestFormat -Value $JobDest)) {
         throw "Job '$Name' has invalid dest '$JobDest'. Expected format remote:path"
+    }
+
+    if (-not (Test-RemoteExists -Dest $JobDest)) {
+        $availableRemotes = @($script:KnownRcloneRemotes)
+        $available = if ($availableRemotes.Count -gt 0) { $availableRemotes -join ', ' } else { '<none>' }
+        throw "Job '$Name' uses unknown rclone remote in '$JobDest'. Available remotes: $available"
     }
 
     if ($JobInterval -lt 0) {
@@ -181,7 +235,7 @@ function Add-ValidatedJob {
     $newJob = [pscustomobject]@{
         name = $Name
         enabled = $Enabled
-        source = $JobSource
+        source = $resolvedSource
         dest = $JobDest
         profile = $ProfileName
     }
@@ -240,8 +294,8 @@ function Start-InteractiveWizard {
 
     $dest = Read-RequiredInput -Prompt 'Destination (remote:path)' -Validator {
         param($value)
-        Test-RcloneDestFormat -Value $value
-    } -ErrorMessage 'Destination must be in remote:path format.'
+        (Test-RcloneDestFormat -Value $value) -and (Test-RemoteExists -Dest $value)
+    } -ErrorMessage 'Destination must be in remote:path format and use an existing rclone remote.'
 
     $profileName = Read-RequiredInput -Prompt 'Profile name' -DefaultValue 'default' -Validator {
         param($value)
@@ -283,6 +337,7 @@ try {
         $Interactive = $true
     }
 
+    $script:KnownRcloneRemotes = @(Get-RcloneRemotes)
     $cfg = Get-OrCreateConfig -Path $ConfigPath
 
     if ($Interactive) {

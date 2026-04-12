@@ -1,5 +1,5 @@
 param(
-    [string]$ConfigPath = (Join-Path $PSScriptRoot 'backup-jobs.json'),
+    [string]$ConfigPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'backup-jobs.json'),
     [string]$JobName,
     [string]$SourceFolder,
     [switch]$Monitor,
@@ -12,6 +12,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$projectRoot = Split-Path -Parent $PSScriptRoot
 
 $mutex = [System.Threading.Mutex]::new($false, 'Global\RcloneBackupRunner')
 $ownsMutex = $false
@@ -965,7 +966,7 @@ function Start-FolderMonitoring {
 }
 
 try {
-    $logDir = Join-Path $PSScriptRoot 'logs'
+    $logDir = Join-Path $projectRoot 'logs'
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
     # Check internet connectivity first
@@ -1179,7 +1180,7 @@ try {
     }
 }
 catch {
-    $errLogDir = Join-Path $PSScriptRoot 'logs'
+    $errLogDir = Join-Path $projectRoot 'logs'
     New-Item -ItemType Directory -Force -Path $errLogDir | Out-Null
     $errLog = Join-Path $errLogDir 'runner-error.log'
     Add-Content -LiteralPath $errLog -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] ERROR: $($_.Exception.Message)"
