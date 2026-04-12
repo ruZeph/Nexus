@@ -38,13 +38,13 @@ The setup script will:
 **Setup menu options:**
 
 | # | Option |
-|---|--------|
+| --- | --- |
 | 1 | Use the repository sample config (default is blank) |
 | 2 | Overwrite existing setup files / config |
 
 **Installed layout:**
 
-```
+```text
 <install-path>/
 ├── Launch-Runner.ps1
 ├── backup-jobs.json
@@ -107,7 +107,7 @@ Jobs are defined in `backup-jobs.json`. Use the helper tool or edit manually.
 **Helper arguments:**
 
 | Argument | Required | Description |
-|----------|----------|-------------|
+| --- | --- | --- |
 | `-ConfigPath` | No | Config file path (default: `./backup-jobs.json`) |
 | `-JobName` | Yes* | Unique job name |
 | `-Source` | Yes* | Local source folder (must exist) |
@@ -121,6 +121,7 @@ Jobs are defined in `backup-jobs.json`. Use the helper tool or edit manually.
 *Required in non-interactive mode.
 
 **Validation the helper enforces:**
+
 - Source path must exist; stored as resolved absolute path
 - Destination must be `remote:path` and remote must match `rclone listremotes` exactly (case-sensitive)
 - Job name: letters, numbers, `.` `_` `-` only
@@ -128,6 +129,7 @@ Jobs are defined in `backup-jobs.json`. Use the helper tool or edit manually.
 - Duplicate names require `-Force`
 
 **Interactive helper menus (multi-choice):**
+
 - Select destination remote from detected remotes
 - Select existing profile or create a new one
 - Select operation behavior (resolve from config / copy / sync)
@@ -139,7 +141,7 @@ Jobs are defined in `backup-jobs.json`. Use the helper tool or edit manually.
 
 #### Minimal example
 
-```json
+```jsonjson
 {
   "settings": {
     "continueOnJobError": true,
@@ -170,7 +172,7 @@ Jobs are defined in `backup-jobs.json`. Use the helper tool or edit manually.
 #### `settings`
 
 | Field | Type | Default | Description |
-|-------|------|---------|-------------|
+| --- | --- | --- | --- |
 | `continueOnJobError` | boolean | `true` | Keep running remaining jobs if one fails |
 | `defaultOperation` | string | `sync` | `copy` or `sync` |
 | `logRetentionCount` | integer | `10` | Log files retained per job |
@@ -197,7 +199,7 @@ Named presets for reusable rclone argument sets:
 #### `jobs[]`
 
 | Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
+| --- | --- | --- | --- | --- |
 | `name` | string | Yes | — | Must be unique among enabled jobs |
 | `source` | string | Yes | — | Local source directory |
 | `dest` | string | Yes | — | `remote:path` format |
@@ -212,13 +214,13 @@ Named presets for reusable rclone argument sets:
 
 **Operation** (highest → lowest):
 
-```
+```text
 CLI -Operation → jobs[].operation → profiles.<name>.operation → settings.defaultOperation → sync
 ```
 
 **Extra arguments** (merged in order):
 
-```
+```text
 settings.defaultExtraArgs → profiles.<name>.extraArgs → jobs[].extraArgs → --dry-run (if CLI flag set)
 ```
 
@@ -227,7 +229,7 @@ settings.defaultExtraArgs → profiles.<name>.extraArgs → jobs[].extraArgs →
 #### Validation rules
 
 | Rule | Behavior |
-|------|----------|
+| --- | --- |
 | `jobs[]` must exist | Runner exits with config error |
 | Enabled job names must be unique | Duplicates are rejected |
 | `name`, `source`, `dest` required | Missing fields fail validation |
@@ -307,7 +309,7 @@ Monitor mode keeps a persistent process running and syncs only when files actual
 **Config inputs used by monitor:**
 
 | Input | Source |
-|-------|--------|
+| --- | --- |
 | Watched folders | `jobs[].source` from enabled jobs |
 | Triggered jobs | Folder-to-job mapping built from `jobs[]` |
 | Debounce period | `-IdleTimeSeconds` CLI flag |
@@ -319,7 +321,7 @@ Monitor mode keeps a persistent process running and syncs only when files actual
 
 Each run cycle follows this order:
 
-```
+```text
 1. Check internet connectivity
 2. Acquire global mutex lock (exit if another instance is active)
 3. Load and validate backup-jobs.json
@@ -335,14 +337,14 @@ Each run cycle follows this order:
 Log files are written to the `logs/` directory.
 
 | File | Purpose |
-|------|---------|
+| --- | --- |
 | `logs/runner.log` | Lifecycle events, monitor activity, resource telemetry, job results |
 | `logs/runner-error.log` | Runtime errors and warnings |
 | `logs/<job-name>/<timestamp>.log` | Raw rclone output per job run |
 
 **Useful queries:**
 
-```powershell
+```powershellpowershell
 # Tail recent activity
 Get-Content logs/runner.log -Tail 100
 
@@ -359,7 +361,7 @@ Select-String -Path logs/runner.log -Pattern "\[JOB RESULT\]"
 All commands use `Launch-Runner.ps1` as the entry point.
 
 | Task | Command |
-|------|---------|
+| --- | --- |
 | Dry run (no transfer) | `.\Launch-Runner.ps1 -Mode dryrun` |
 | Run eligible jobs | `.\Launch-Runner.ps1 -Mode run` |
 | Force all jobs | `.\Launch-Runner.ps1 -Mode run -Force` |
@@ -370,7 +372,7 @@ All commands use `Launch-Runner.ps1` as the entry point.
 **Exit codes:**
 
 | Code | Meaning |
-|------|---------|
+| --- | --- |
 | `0` | Success |
 | `1` | Runtime failure |
 | `2` | Configuration or validation failure |
@@ -379,7 +381,7 @@ All commands use `Launch-Runner.ps1` as the entry point.
 
 ## Testing
 
-```powershell
+```powershellpowershell
 # Full test suite
 .\tools\Test-RcloneJobs.ps1
 
@@ -392,7 +394,7 @@ All commands use `Launch-Runner.ps1` as the entry point.
 ## Troubleshooting
 
 | Symptom | Check first | Fix |
-|---------|-------------|-----|
+| --- | --- | --- |
 | Internet check fails | ICMP to `8.8.8.8` blocked? | Allow ping in firewall, or modify the connectivity check in the script |
 | Monitor not triggering | Source paths exist? `-Mode monitor` set? | Confirm paths, inspect `logs/runner.log` for watcher startup entries |
 | Frequent rate limits | Transfer/checker counts too high? | Lower `--transfers`/`--checkers` in profile; increase `--retries-sleep` in `defaultExtraArgs` |
