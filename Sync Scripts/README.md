@@ -493,6 +493,67 @@ Active mechanisms preventing rate limit errors:
 4. **Drive Acknowledge**: Handles abuse-flagged files gracefully
 5. **Cutoff Mode**: Cautious approach to partial transfers
 
+### RealTimeSync Integration
+
+Trigger backups automatically when folder changes are detected using RealTimeSync.
+
+**RealTimeSync Setup for Playnite Backups:**
+
+1. **Open RealTimeSync 14.9+**
+2. **Configure folder monitoring:**
+   - Folders to watch: `C:\Custom User\Ludusavi\PlayniteBackups`
+   - Idle time: `60` seconds (prevents repeated triggers during rapid changes)
+3. **Set command line to trigger backup:**
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Run-RcloneJobs.ps1" -JobName "playnite-backup" -Silent
+```
+
+**Command breakdown:**
+- `powershell.exe` - PowerShell executable
+- `-NoProfile` - Skip profile loading (faster execution)
+- `-ExecutionPolicy Bypass` - Allow script execution
+- `-File` - Path to Run-RcloneJobs.ps1
+- `-JobName "playnite-backup"` - Run only playnite-backup job
+- `-Silent` - No console output (recommended for automated triggers)
+
+**How it works:**
+1. RealTimeSync monitors folder for changes
+2. When changes detected, waits 60 seconds (idle time)
+3. If no more changes, triggers the PowerShell command
+4. Script acquires mutex, checks internet, runs playnite-backup job
+5. Files synced to `GDrive_Main:Backups/playnite-restic`
+6. Job completes, waits 60 seconds before next job (interval)
+
+**Alternative commands:**
+
+```powershell
+# Run all enabled jobs
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Run-RcloneJobs.ps1" -Silent
+
+# Run with dry-run (preview only, no transfer)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Run-RcloneJobs.ps1" -JobName "playnite-backup" -DryRun -Silent
+
+# Run without silent mode (see console output)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Run-RcloneJobs.ps1" -JobName "playnite-backup"
+```
+
+**Performance Tips:**
+- Set idle time to at least 30-60 seconds (prevents excessive triggers)
+- Use `-Silent` flag to reduce overhead
+- Monitor logs in `logs/playnite-backup/` to verify triggers
+- Check `logs/runner.log` for overall execution history
+
+**Troubleshooting RealTimeSync integration:**
+
+| Issue | Solution |
+|-------|----------|
+| Command not executing | Verify PowerShell path: `where powershell.exe` |
+| Script hangs or times out | Another instance running (mutex lock) - wait or stop it |
+| No output visible | Use `-Silent` flag for background execution (normal) |
+| Files not syncing | Check internet connection, verify source folder path |
+| Frequent triggers | Increase idle time to 120+ seconds |
+
 ---
 
 ## Usage Guide
