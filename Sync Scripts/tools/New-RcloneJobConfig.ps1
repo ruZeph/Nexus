@@ -338,7 +338,7 @@ function Start-InteractiveWizard {
         param($value)
         -not [string]::IsNullOrWhiteSpace($value) -and -not $value.Trim().StartsWith(':')
     } -ErrorMessage 'Destination path cannot be empty and must not start with a colon.'
-    $dest = "$remoteName:$remotePath"
+    $dest = "${remoteName}:$remotePath"
 
     if (-not (Test-RemoteExists -Dest $dest)) {
         $available = @($script:KnownRcloneRemotes) -join ', '
