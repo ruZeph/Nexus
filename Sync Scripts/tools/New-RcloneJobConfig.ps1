@@ -82,7 +82,43 @@ function Test-RemoteExists {
     }
 
     $remoteName = ($Dest -split ':', 2)[0] + ':'
-    return @($script:KnownRcloneRemotes) -contains $remoteName
+    # Remote name match is case-sensitive to avoid accepting typo variants.
+    return @($script:KnownRcloneRemotes) -ccontains $remoteName
+}
+
+function Select-MenuOption {
+    param(
+        [Parameter(Mandatory = $true)][string]$Prompt,
+        [Parameter(Mandatory = $true)][string[]]$Options,
+        [int]$DefaultIndex = 1
+    )
+
+    if ($Options.Count -eq 0) {
+        throw 'No options available for selection.'
+    }
+
+    if ($DefaultIndex -lt 1 -or $DefaultIndex -gt $Options.Count) {
+        $DefaultIndex = 1
+    }
+
+    Write-Info $Prompt
+    for ($i = 0; $i -lt $Options.Count; $i++) {
+        Write-Host "  $($i + 1)) $($Options[$i])" -ForegroundColor Gray
+    }
+
+    while ($true) {
+        $inputValue = Read-Host "Choose option [$DefaultIndex]"
+        if ([string]::IsNullOrWhiteSpace($inputValue)) {
+            return $Options[$DefaultIndex - 1]
+        }
+
+        $selected = 0
+        if ([int]::TryParse($inputValue, [ref]$selected) -and $selected -ge 1 -and $selected -le $Options.Count) {
+            return $Options[$selected - 1]
+        }
+
+        Write-Warn "Invalid selection '$inputValue'. Enter a number between 1 and $($Options.Count)."
+    }
 }
 
 function Set-MissingProperty {
@@ -284,31 +320,55 @@ function Start-InteractiveWizard {
 
     $name = Read-RequiredInput -Prompt 'Job name' -DefaultValue 'documents-backup' -Validator {
         param($value)
-        -not [string]::IsNullOrWhiteSpace($value)
-    } -ErrorMessage 'Job name cannot be empty.'
+        -not [string]::IsNullOrWhiteSpace($value) -and (Test-JobName -Name $value)
+    } -ErrorMessage 'Job name must use letters, numbers, dot, underscore, or hyphen.'
 
     $source = Read-RequiredInput -Prompt 'Source folder path' -Validator {
         param($value)
         -not [string]::IsNullOrWhiteSpace($value) -and (Test-Path -LiteralPath $value -PathType Container)
     } -ErrorMessage 'Source folder must exist and be a directory.'
 
-    $dest = Read-RequiredInput -Prompt 'Destination (remote:path)' -Validator {
+    $remoteOptions = @($script:KnownRcloneRemotes | Sort-Object)
+    if ($remoteOptions.Count -eq 0) {
+        throw 'No rclone remotes found. Run rclone config first.'
+    }
+    $selectedRemote = Select-MenuOption -Prompt 'Select destination remote' -Options $remoteOptions -DefaultIndex 1
+    $remoteName = $selectedRemote.TrimEnd(':')
+    $remotePath = Read-RequiredInput -Prompt 'Destination path inside selected remote' -Validator {
         param($value)
-        (Test-RcloneDestFormat -Value $value) -and (Test-RemoteExists -Dest $value)
-    } -ErrorMessage 'Destination must be in remote:path format and use an existing rclone remote.'
+        -not [string]::IsNullOrWhiteSpace($value) -and -not $value.Trim().StartsWith(':')
+    } -ErrorMessage 'Destination path cannot be empty and must not start with a colon.'
+    $dest = "$remoteName:$remotePath"
 
-    $profileName = Read-RequiredInput -Prompt 'Profile name' -DefaultValue 'default' -Validator {
-        param($value)
-        -not [string]::IsNullOrWhiteSpace($value)
-    } -ErrorMessage 'Profile cannot be empty.'
+    if (-not (Test-RemoteExists -Dest $dest)) {
+        $available = @($script:KnownRcloneRemotes) -join ', '
+        throw "Selected destination '$dest' does not match configured remotes (case-sensitive). Available: $available"
+    }
 
-    $operation = Read-Host 'Operation copy/sync (blank = resolve from config)'
-    if (-not [string]::IsNullOrWhiteSpace($operation)) {
-        $opNormalized = $operation.Trim().ToLowerInvariant()
-        if ($opNormalized -notin @('copy', 'sync')) {
-            throw "Operation '$operation' is invalid. Use copy or sync."
-        }
-        $operation = $opNormalized
+    $profileNames = @($Config.profiles.PSObject.Properties.Name | Sort-Object)
+    $createProfileLabel = '<Create new profile>'
+    if ($profileNames.Count -eq 0) {
+        $profileNames = @($createProfileLabel)
+    }
+    else {
+        $profileNames += $createProfileLabel
+    }
+
+    $profileChoice = Select-MenuOption -Prompt 'Select profile' -Options $profileNames -DefaultIndex 1
+    if ($profileChoice -eq $createProfileLabel) {
+        $profileName = Read-RequiredInput -Prompt 'New profile name' -DefaultValue 'default' -Validator {
+            param($value)
+            -not [string]::IsNullOrWhiteSpace($value)
+        } -ErrorMessage 'Profile cannot be empty.'
+    }
+    else {
+        $profileName = $profileChoice
+    }
+
+    $operationChoice = Select-MenuOption -Prompt 'Select operation behavior' -Options @('Resolve from config', 'copy', 'sync') -DefaultIndex 1
+    $operation = $null
+    if ($operationChoice -eq 'copy' -or $operationChoice -eq 'sync') {
+        $operation = $operationChoice
     }
 
     $intervalText = Read-Host 'Interval seconds between jobs (blank = default)'
@@ -322,11 +382,8 @@ function Start-InteractiveWizard {
         }
     }
 
-    $enabledText = Read-Host 'Enable this job? (Y/n)'
-    $enabled = $true
-    if (-not [string]::IsNullOrWhiteSpace($enabledText) -and $enabledText.Trim().ToLowerInvariant() -in @('n', 'no')) {
-        $enabled = $false
-    }
+    $enabledChoice = Select-MenuOption -Prompt 'Job state' -Options @('enabled', 'disabled') -DefaultIndex 1
+    $enabled = ($enabledChoice -eq 'enabled')
 
     Add-ValidatedJob -Config $Config -Name $name -JobSource $source -JobDest $dest -ProfileName $profileName -JobOperation $operation -JobInterval $jobInterval -Enabled $enabled -Overwrite:$Force
     Write-Ok "Job '$name' configured."

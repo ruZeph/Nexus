@@ -4,7 +4,6 @@ param(
     [string]$RepoName = 'Nexus',
     [string]$RepoBranch = 'main',
     [switch]$SkipRcloneInstall,
-    [switch]$ConfigureJob,
     [switch]$Force
 )
 
@@ -122,14 +121,10 @@ function Resolve-InstallPath {
 }
 
 function Get-SetupSelections {
-    param(
-        [bool]$DefaultRunHelper,
-        [bool]$DefaultForce
-    )
+    param([bool]$DefaultForce)
 
     $selection = [pscustomobject]@{
         ConfigMode = 'default'
-        RunHelper = $DefaultRunHelper
         Force = $DefaultForce
     }
 
@@ -140,8 +135,7 @@ function Get-SetupSelections {
     Write-Host ''
     Write-Step 'Setup Options (multi-choice)'
     Write-Host '  1) Use repository sample config (default is blank config)' -ForegroundColor Gray
-    Write-Host '  2) Launch job configuration helper after setup' -ForegroundColor Gray
-    Write-Host '  3) Overwrite existing setup files/config' -ForegroundColor Gray
+    Write-Host '  2) Overwrite existing setup files/config' -ForegroundColor Gray
 
     $inputValue = Read-Host 'Select options (comma-separated, Enter for defaults)'
     if ([string]::IsNullOrWhiteSpace($inputValue)) {
@@ -152,8 +146,7 @@ function Get-SetupSelections {
     foreach ($token in $tokens) {
         switch ($token) {
             '1' { $selection.ConfigMode = 'copy' }
-            '2' { $selection.RunHelper = $true }
-            '3' { $selection.Force = $true }
+            '2' { $selection.Force = $true }
             default { Write-Warn "Unknown setup option '$token' ignored." }
         }
     }
@@ -323,9 +316,8 @@ try {
         throw "PowerShell 5.1+ is required. Detected: $($PSVersionTable.PSVersion)"
     }
 
-    $selections = Get-SetupSelections -DefaultRunHelper:$ConfigureJob -DefaultForce:$Force
+    $selections = Get-SetupSelections -DefaultForce:$Force
     $selectedConfigMode = [string]$selections.ConfigMode
-    $runHelper = [bool]$selections.RunHelper
     $overwriteExisting = [bool]$selections.Force
 
     $InstallPath = Resolve-InstallPath -RequestedPath $InstallPath -PromptUser $true
@@ -378,19 +370,15 @@ try {
 
     $helperPath = Join-Path $InstallPath 'tools/New-RcloneJobConfig.ps1'
 
-    if (-not $runHelper -and [Environment]::UserInteractive) {
-        $answer = Read-Host 'Open job configuration helper now? (y/N)'
-        if ($answer.Trim().ToLowerInvariant() -in @('y', 'yes')) {
-            $runHelper = $true
-        }
-    }
-
-    if ($runHelper) {
+    if ([Environment]::UserInteractive) {
         Write-Step 'Launching job configuration helper'
         & $helperPath -ConfigPath $configPath -Interactive -Force:$overwriteExisting
         if ($LASTEXITCODE -ne 0) {
             throw 'Job configuration helper failed.'
         }
+    }
+    else {
+        Write-Warn 'Non-interactive session detected. Skipping interactive job helper launch.'
     }
 
     Write-Ok 'Quick start setup completed successfully.'

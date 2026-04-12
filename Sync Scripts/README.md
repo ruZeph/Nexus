@@ -33,15 +33,14 @@ The setup script will:
 - Download all runner files with retries
 - Generate a blank `backup-jobs.json` (won't overwrite an existing one unless you choose to)
 - Verify your rclone remote exists
-- Offer an interactive menu to finalize configuration
+- Always launch the interactive job configuration helper (in interactive sessions)
 
 **Setup menu options:**
 
 | # | Option |
 |---|--------|
 | 1 | Use the repository sample config (default is blank) |
-| 2 | Launch the job configuration helper after setup |
-| 3 | Overwrite existing setup files / config |
+| 2 | Overwrite existing setup files / config |
 
 **Installed layout:**
 
@@ -123,10 +122,16 @@ Jobs are defined in `backup-jobs.json`. Use the helper tool or edit manually.
 
 **Validation the helper enforces:**
 - Source path must exist; stored as resolved absolute path
-- Destination must be `remote:path` and remote must appear in `rclone listremotes`
+- Destination must be `remote:path` and remote must match `rclone listremotes` exactly (case-sensitive)
 - Job name: letters, numbers, `.` `_` `-` only
 - Interval must be a non-negative integer
 - Duplicate names require `-Force`
+
+**Interactive helper menus (multi-choice):**
+- Select destination remote from detected remotes
+- Select existing profile or create a new one
+- Select operation behavior (resolve from config / copy / sync)
+- Select job state (enabled / disabled)
 
 ---
 
