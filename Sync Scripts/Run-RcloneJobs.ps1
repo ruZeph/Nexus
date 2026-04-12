@@ -352,20 +352,79 @@ function Get-FolderSnapshotSignature {
         return ''
     }
 
-    $items = Get-ChildItem -LiteralPath $FolderPath -Recurse -Force -ErrorAction SilentlyContinue |
-        Sort-Object -Property FullName
+    try {
+        # Use only top-level items for faster comparison (low CPU/memory)
+        $items = @(Get-ChildItem -LiteralPath $FolderPath -Force -ErrorAction Stop | 
+            Select-Object -Property Name, LastWriteTimeUtc | 
+            Sort-Object -Property Name)
 
-    if (-not $items) {
-        return 'EMPTY'
+        if ($items.Count -eq 0) {
+            return 'EMPTY'
+        }
+
+        # Fast hash: concatenate names and timestamps
+        $signatureData = ($items | ForEach-Object { "$($_.Name)|$($_.LastWriteTimeUtc.Ticks)" }) -join '|'
+        $hash = [System.Security.Cryptography.HashAlgorithm]::Create('MD5').ComputeHash([Text.Encoding]::UTF8.GetBytes($signatureData))
+        return [System.BitConverter]::ToString($hash) -replace '-', ''
     }
-
-    $signatureParts = foreach ($item in $items) {
-        $relativePath = $item.FullName.Substring($FolderPath.Length).TrimStart('\')
-        $lengthValue = if ($item.PSIsContainer) { 0 } else { $item.Length }
-        "{0}|{1}|{2}|{3}" -f $relativePath, $item.PSIsContainer, $lengthValue, $item.LastWriteTimeUtc.Ticks
+    catch [System.UnauthorizedAccessException] {
+        return 'ERROR_ACCESS'
     }
+    catch {
+        return 'ERROR_READ'
+    }
+}
 
-    return [string]::Join("`n", $signatureParts)
+function Update-FolderJobMapping {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)][string]$LogDir,
+        [bool]$IsSilent = $false,
+        [hashtable]$ExistingMap = @{}
+    )
+
+    $folderJobMap = @{}
+    $watchedFolders = @()
+    
+    if ($null -eq $Config -or $null -eq $Config.jobs) {
+        return @{ JobMap = $ExistingMap; Folders = @() }
+    }
+    
+    foreach ($job in $Config.jobs | Where-Object { $_.enabled -ne $false }) {
+        $source = [string](Get-ConfigProperty -Object $job -Name 'source')
+        $jobName = [string](Get-ConfigProperty -Object $job -Name 'name')
+        
+        if ([string]::IsNullOrWhiteSpace($source) -or [string]::IsNullOrWhiteSpace($jobName)) { 
+            continue 
+        }
+        
+        # Security: Validate job name
+        if ($jobName -match '[<>:"|?*\\]') {
+            Write-RunnerLog -LogDir $LogDir -Message "Warning: Invalid job name: $jobName"
+            continue
+        }
+        
+        try {
+            $resolvedPath = (Resolve-Path -Path $source -ErrorAction SilentlyContinue).ProviderPath
+            if (-not [string]::IsNullOrWhiteSpace($resolvedPath)) {
+                if (-not $folderJobMap.ContainsKey($resolvedPath)) {
+                    $folderJobMap[$resolvedPath] = @()
+                    $watchedFolders += $resolvedPath
+                    
+                    if (-not $ExistingMap.ContainsKey($resolvedPath)) {
+                        Write-RunnerLog -LogDir $LogDir -Message "[NEW JOB] Monitoring: $resolvedPath"
+                        Write-ShellMessage -Message "[NEW] Monitoring: $resolvedPath" -IsSilent $IsSilent
+                    }
+                }
+                $folderJobMap[$resolvedPath] += $jobName
+            }
+        }
+        catch {
+            Write-RunnerLog -LogDir $LogDir -Message "Warning: Cannot monitor '$source': $_"
+        }
+    }
+    
+    return @{ JobMap = $folderJobMap; Folders = $watchedFolders }
 }
 
 function Start-FolderMonitoring {
@@ -379,9 +438,10 @@ function Start-FolderMonitoring {
         [System.Threading.Mutex]$Mutex = $null
     )
 
-    # Build folder-to-jobs mapping
-    $folderJobMap = @{}
-    $watchedFolders = @()
+    # Build initial folder-to-jobs mapping
+    $mapping = Update-FolderJobMapping -Config $Config -LogDir $LogDir -IsSilent $IsSilent
+    $folderJobMap = $mapping.JobMap
+    $watchedFolders = $mapping.Folders
     
     foreach ($job in $Config.jobs | Where-Object { $_.enabled -ne $false }) {
         $source = [string](Get-ConfigProperty -Object $job -Name 'source')
@@ -413,13 +473,22 @@ function Start-FolderMonitoring {
 
     # Track folder snapshots so only real content changes trigger jobs
     $folderState = @{}
+    $configLastCheck = Get-Date
+    $configCheckInterval = 30  # Check config every 30 seconds for changes
+    $lastConfigModTime = (Get-Item -LiteralPath $ConfigPath -ErrorAction SilentlyContinue).LastWriteTime
 
     # Initialize baseline snapshots without triggering jobs on startup
     foreach ($folder in $watchedFolders) {
-        $folderState[$folder] = [pscustomobject]@{
-            Snapshot = Get-FolderSnapshotSignature -FolderPath $folder
-            LastChange = $null
-            PendingChange = $false
+        $snapshot = Get-FolderSnapshotSignature -FolderPath $folder
+        if ($snapshot -notin @('ERROR_ACCESS', 'ERROR_READ')) {
+            $folderState[$folder] = [pscustomobject]@{
+                Snapshot = $snapshot
+                LastChange = $null
+                PendingChange = $false
+                ErrorCount = 0
+            }
+        } else {
+            Write-RunnerLog -LogDir $LogDir -Message "Warning: Cannot access folder initially: $folder"
         }
     }
 
@@ -431,6 +500,25 @@ function Start-FolderMonitoring {
         while ($true) {
             Start-Sleep -Seconds 5
             $now = Get-Date
+            
+            # Dynamic config reload: Check if config changed
+            $timeSinceLastCheck = ($now - $configLastCheck).TotalSeconds
+            if ($timeSinceLastCheck -ge $configCheckInterval) {
+                $configLastCheck = $now
+                try {
+                    $currentModTime = (Get-Item -LiteralPath $ConfigPath -ErrorAction SilentlyContinue).LastWriteTime
+                    if ($null -ne $currentModTime -and $currentModTime -gt $lastConfigModTime) {
+                        $lastConfigModTime = $currentModTime
+                        $newConfig = Get-Content -Raw -LiteralPath $ConfigPath -ErrorAction Stop | ConvertFrom-Json
+                        $mapping = Update-FolderJobMapping -Config $newConfig -LogDir $LogDir -IsSilent $IsSilent -ExistingMap $folderJobMap
+                        $folderJobMap = $mapping.JobMap
+                        $watchedFolders = $mapping.Folders
+                    }
+                }
+                catch {
+                    Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to reload config: $_"
+                }
+            }
 
             foreach ($folder in $watchedFolders) {
                 $state = $folderState[$folder]
@@ -438,7 +526,30 @@ function Start-FolderMonitoring {
                     continue
                 }
 
+                # Check if folder still exists and is accessible
+                if (-not (Test-Path -LiteralPath $folder -ErrorAction SilentlyContinue)) {
+                    if ($state.ErrorCount -ge 2) {
+                        Write-RunnerLog -LogDir $LogDir -Message "Warning: Folder no longer accessible: $folder"
+                        $folderState.Remove($folder) | Out-Null
+                        $watchedFolders = @($watchedFolders | Where-Object { $_ -ne $folder })
+                    } else {
+                        $state.ErrorCount++
+                    }
+                    continue
+                }
+                
+                $state.ErrorCount = 0
+
                 $currentSnapshot = Get-FolderSnapshotSignature -FolderPath $folder
+                
+                if ($currentSnapshot -in @('ERROR_ACCESS', 'ERROR_READ')) {
+                    $state.ErrorCount++
+                    if ($state.ErrorCount -ge 3) {
+                        Write-RunnerLog -LogDir $LogDir -Message "Warning: Persistent access error: $folder"
+                    }
+                    continue
+                }
+                
                 if ($currentSnapshot -ne $state.Snapshot) {
                     $state.Snapshot = $currentSnapshot
                     $state.LastChange = $now
@@ -458,7 +569,11 @@ function Start-FolderMonitoring {
                     continue
                 }
 
-                $jobs = $folderJobMap[$folder]
+                $jobs = @($folderJobMap[$folder])
+                if ($jobs.Count -eq 0) {
+                    continue
+                }
+                
                 $msg = "Idle time reached for changed folder: $folder. Triggering jobs: $($jobs -join ', ')"
                 Write-RunnerLog -LogDir $LogDir -Message $msg
                 Write-ShellMessage -Message $msg -IsSilent $IsSilent
@@ -468,21 +583,44 @@ function Start-FolderMonitoring {
                 $state.LastChange = $now
 
                 foreach ($jobName in $jobs) {
+                    # Security: Validate job name
+                    if ([string]::IsNullOrWhiteSpace($jobName) -or $jobName -match '[<>:"|?*\\]') {
+                        Write-RunnerLog -LogDir $LogDir -Message "Warning: Invalid job name: $jobName"
+                        continue
+                    }
+                    
                     $msg = "Executing job: $jobName (triggered by folder: $folder)"
                     Write-RunnerLog -LogDir $LogDir -Message $msg
                     Write-ShellMessage -Message $msg -IsSilent $IsSilent
 
                     # Temporarily release mutex so job can acquire it
                     if ($null -ne $Mutex) {
-                        $Mutex.ReleaseMutex() | Out-Null
+                        try {
+                            $Mutex.ReleaseMutex() | Out-Null
+                        }
+                        catch {
+                            Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to release mutex: $_"
+                        }
                     }
                     
-                    # Run job via recursive call
-                    & $PSCommandPath -JobName $jobName -ConfigPath $ConfigPath -DryRun:$DryRun -Silent:$IsSilent -ErrorAction SilentlyContinue
-                    
-                    # Re-acquire mutex for continued monitoring
-                    if ($null -ne $Mutex) {
-                        $Mutex.WaitOne() | Out-Null
+                    try {
+                        # Run job via recursive call
+                        & $PSCommandPath -JobName $jobName -ConfigPath $ConfigPath -DryRun:$DryRun -Silent:$IsSilent -ErrorAction SilentlyContinue
+                    }
+                    catch {
+                        Write-RunnerLog -LogDir $LogDir -Message "Error executing job '$jobName': $_"
+                    }
+                    finally {
+                        # Re-acquire mutex for continued monitoring
+                        if ($null -ne $Mutex) {
+                            try {
+                                $Mutex.WaitOne() | Out-Null
+                            }
+                            catch {
+                                Write-RunnerLog -LogDir $LogDir -Message "Error: Failed to re-acquire mutex: $_"
+                                throw "Critical: Lost mutex lock during monitoring"
+                            }
+                        }
                     }
                 }
             }
