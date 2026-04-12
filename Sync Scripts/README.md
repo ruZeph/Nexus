@@ -1,6 +1,9 @@
+<!-- markdownlint-disable MD013 -->
+
 # Run-RcloneJobs - Automated Backup Orchestration
 
 A PowerShell-based automation framework for managing rclone backup jobs with:
+
 - Rate limit protection and intelligent job scheduling
 - Process locking and comprehensive logging
 
@@ -122,7 +125,7 @@ Prevents rate limiting by adding delays between sequential job executions.
 
 **Timeline example:**
 
-```
+```text
 14:00:00 - Start job1 (office-docs-backup)
 14:00:45 - job1 completes
 14:01:45 - Wait 60s (job1.interval), then start job2
@@ -304,7 +307,7 @@ Edit `backup-jobs.json` with your backup jobs and sources.
 ### Settings Reference
 
 | Setting | Type | Description |
-|---------|------|-------------|
+| --------- | ------ | ------------- |
 | `continueOnJobError` | boolean | Continue to next job if one fails (default: true) |
 | `defaultOperation` | string | Operation for all jobs: `sync` or `copy` |
 | `logRetentionCount` | number | Keep last N log files per job (default: 10) |
@@ -353,7 +356,7 @@ Individual backup job definitions.
 ```
 
 | Job Property | Type | Required | Description |
-|-------------|------|----------|-------------|
+| ------------- | ------ | ---------- | ------------- |
 | `name` | string | Yes | Unique job identifier |
 | `enabled` | boolean | No | Enable/disable job (default: true) |
 | `profile` | string | No | Reference to profile (optional) |
@@ -465,7 +468,7 @@ The following is the active configuration currently running:
 ### Global Settings Explained
 
 | Setting | Current Value | Rationale |
-|---------|---|---|
+| --------- | --- | --- |
 | Retries | 15 | Handles temporary Google Drive rate limits |
 | Retry Sleep | 30s | Exponential backoff with 30s base delay |
 | Connection Timeout | 30s | Fails fast on network issues |
@@ -486,7 +489,7 @@ The following is the active configuration currently running:
 **Profile Tuning:**
 
 | Profile | Use Case | Transfers | Checkers | Chunk Size |
-|---------|----------|-----------|----------|-----------|
+| --------- | ---------- | ----------- | ---------- | ----------- |
 | docs-small-files | 10-100 files | 6 | 12 | 16M |
 | playnite-restic | Large files/archives | 8 | 4 | 32M |
 
@@ -563,7 +566,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sy
 **Troubleshooting RealTimeSync integration:**
 
 | Issue | Solution |
-|-------|----------|
+| ------- | ---------- |
 | Command not executing | Verify PowerShell path: `where powershell.exe` |
 | Script hangs or times out | Another instance running (mutex lock) - wait or stop it |
 | No output visible | Use `-Silent` flag for background execution (normal) |
@@ -581,7 +584,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sy
 ```
 
 | Option | Type | Description |
-|--------|------|-------------|
+| -------- | ------ | ------------- |
 | `-ConfigPath` | string | Path to config JSON (default: ./backup-jobs.json) |
 | `-JobName` | string | Run specific job by name |
 | `-DryRun` | switch | Test mode, no transfers (use `--dry-run` in rclone) |
@@ -620,7 +623,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sy
 ### Exit Codes
 
 | Code | Meaning |
-|------|---------|
+| ------ | --------- |
 | 0 | Success or graceful exit (another instance running) |
 | 1 | Error or job failure (with FailFast enabled) |
 
@@ -711,7 +714,7 @@ Select-String "rate limited" logs\office-docs-backup\*.log
 
 ✅ **All Pass (100% expected):**
 
-```
+```text
 Passed:     50+
 Failed:     0
 Pass Rate:  100%
@@ -729,7 +732,7 @@ Pass Rate:  100%
 ### Expected Performance
 
 | Test Category | Expected Time | Max Acceptable |
-|---------------|---|---|
+| --------------- | --- | --- |
 | Unit tests | 5-10s | 15s |
 | Integration tests | 20-40s | 60s |
 | Parallel tests | 15-30s | 45s |
@@ -866,7 +869,7 @@ Pass Rate:  100%
 
 ## Best Practices
 
-### Configuration
+### Configuration Management
 
 1. **Use profiles** to reduce duplication
 2. **Test with dry-run first** before production
@@ -924,7 +927,7 @@ Pass Rate:  100%
 ### Key Functions
 
 | Function | Purpose |
-|----------|---------|
+| ---------- | --------- |
 | `Test-InternetConnectivity` | Verifies internet before running |
 | `Test-RateLimitError` | Detects rate limit errors in logs |
 | `Remove-OldJobLog` | Enforces log retention limits |
@@ -933,7 +936,7 @@ Pass Rate:  100%
 
 ### Process Flow
 
-```
+```text
 1. Start Run-RcloneJobs.ps1
 2. Acquire mutex lock (exit if already running)
 3. Check internet connectivity (exit if no connection)
@@ -1016,4 +1019,3 @@ Specify your license here (e.g., MIT, Apache 2.0)
 **Questions?** Check logs in `logs/` directory or run tests with `-Verbose` flag.
 
 **Ready to migrate to production?** Test with `-DryRun` first, then schedule with Task Scheduler.
-
