@@ -54,7 +54,49 @@ function Write-RunnerErrorLog {
     Write-JobLog -LogFile $runnerErrorLog -Message $Message
 }
 
-function Archive-RunnerLogFiles {
+function Get-StopRequestPath {
+    param([Parameter(Mandatory = $true)][string]$LogDir)
+
+    return (Join-Path $LogDir 'stop-request.txt')
+}
+
+function Test-StopRequested {
+    param([Parameter(Mandatory = $true)][string]$LogDir)
+
+    return (Test-Path -LiteralPath (Get-StopRequestPath -LogDir $LogDir))
+}
+
+function Clear-StopRequest {
+    param([Parameter(Mandatory = $true)][string]$LogDir)
+
+    $requestPath = Get-StopRequestPath -LogDir $LogDir
+    if (Test-Path -LiteralPath $requestPath) {
+        Remove-Item -LiteralPath $requestPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Read-StopRequestMessage {
+    param([Parameter(Mandatory = $true)][string]$LogDir)
+
+    $requestPath = Get-StopRequestPath -LogDir $LogDir
+    if (-not (Test-Path -LiteralPath $requestPath)) {
+        return 'Stop requested.'
+    }
+
+    try {
+        $content = Get-Content -LiteralPath $requestPath -Raw -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace($content)) {
+            return 'Stop requested.'
+        }
+
+        return $content.Trim()
+    }
+    catch {
+        return 'Stop requested.'
+    }
+}
+
+function Save-RunnerLogsToArchive {
     param([Parameter(Mandatory = $true)][string]$LogDir)
 
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
@@ -850,6 +892,13 @@ function Start-FolderMonitoring {
             Start-Sleep -Seconds 5
             $now = Get-Date
 
+            if (Test-StopRequested -LogDir $LogDir) {
+                $stopMessage = Read-StopRequestMessage -LogDir $LogDir
+                Write-RunnerLog -LogDir $LogDir -Message "Stop request detected. Exiting monitor loop gracefully. Reason: $stopMessage"
+                Clear-StopRequest -LogDir $LogDir
+                return
+            }
+
             if ((($now - $resourceLastLog).TotalSeconds) -ge $resourceLogInterval) {
                 Write-RunnerResourceLog -State $resourceState -LogDir $LogDir -Context 'monitor-loop'
                 $resourceLastLog = $now
@@ -1102,7 +1151,7 @@ try {
         exit 0
     }
     $ownsMutex = $true
-    Archive-RunnerLogFiles -LogDir $logDir
+    Save-RunnerLogsToArchive -LogDir $logDir
     Write-RunnerSessionSeparator -LogDir $logDir
 
     if (-not (Test-Path -LiteralPath $ConfigPath)) {

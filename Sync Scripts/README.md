@@ -135,6 +135,16 @@ Jobs are defined in `backup-jobs.json`. Use the helper tool or edit manually.
 - Select operation behavior (resolve from config / copy / sync)
 - Select job state (enabled / disabled)
 
+**Running jobs manager:**
+
+```powershell
+.\tools\Manage-RunningJobs.ps1
+```
+
+Use this to inspect active monitor/job processes, review the latest job log path, request a safe stop after the current transfer completes, or force-stop a selected process tree if needed.
+
+The manager also records its own activity in `logs/manager.log` and `logs/manager-error.log`, and it writes a stop request to `logs/stop-request.txt` when you choose a safe stop.
+
 ---
 
 ### Config Schema
@@ -366,7 +376,7 @@ All commands use `Launch-Runner.ps1` as the entry point.
 | Run eligible jobs | `.\Launch-Runner.ps1 -Mode run` |
 | Force all jobs | `.\Launch-Runner.ps1 -Mode run -Force` |
 | Silent (for schedulers) | `.\Launch-Runner.ps1 -Mode run -Silent` |
-| Task Scheduler window + network wait | `.\Launch-Runner.ps1 -Mode run -TaskScheduler` |
+| Task Scheduler monitor mode | `.\Launch-Runner.ps1 -Mode monitor -TaskScheduler -Silent -IdleTimeSeconds 60` |
 | Custom config path | `.\Launch-Runner.ps1 -Mode run -ConfigPath .\backup-jobs.json` |
 | Start monitor | `.\Launch-Runner.ps1 -Mode monitor -IdleTimeSeconds 10` |
 
@@ -380,10 +390,19 @@ All commands use `Launch-Runner.ps1` as the entry point.
 
 **Task Scheduler mode:**
 
-- Opens a separate `cmd.exe` window so you can see the run start time and log location
+- Launches the runner in a detached PowerShell process and opens a small notification window
+- Use `-Mode monitor` for folder-watcher scheduling so the script stays alive and responds to file changes
 - Waits for network connectivity before starting the job run
 - Shows short event notifications for important scheduler events (already-running instance, network interruption, and recovery)
 - Writes startup and connectivity status into the normal runner logs under `logs/`
+- Keeps scheduler startup logs in `logs/runner.log` and `logs/runner-error.log`
+- Stores per-job logs under `logs/<job-name>/` and logs each job logfile path after it is created
+
+**Monitor stop behavior:**
+
+- A safe stop request is written to `logs/stop-request.txt`
+- The monitor checks for that file between jobs and exits cleanly after the current transfer finishes
+- If the runner is stopped or crashes for any other reason, review `logs/runner.log`, `logs/runner-error.log`, and `logs/manager*.log` for the latest event trail
 
 ---
 
