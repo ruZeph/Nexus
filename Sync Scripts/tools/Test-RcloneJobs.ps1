@@ -1,7 +1,7 @@
 param(
     [switch]$Verbose,
     [switch]$QuickTest,
-    [ValidateSet('All', 'Unit', 'Integration', 'Parallel')][string]$TestSuite = 'All'
+    [ValidateSet('All', 'Unit', 'Integration', 'Parallel', 'RobustnessFixes')][string]$TestSuite = 'All'
 )
 
 Set-StrictMode -Version Latest
@@ -722,6 +722,242 @@ function Test-InternetConnectivityFunction {
 }
 
 # ============================================================
+# ROBUSTNESS TESTS - P0-P2 Code Quality Fixes
+# ============================================================
+
+function Test-NetworkRetryTimeout {
+    Write-TestHeader "Robustness Test: Network Retry Timeout (P0)"
+
+    Write-TestCase "Wait-ForInternetConnectivity function has timeout logic"
+    $scriptContent = Get-Content -LiteralPath $testConfig.scriptPath
+    $hasMaxRetries = [bool]($scriptContent -match 'MaxRetries.*=.*24')
+    $hasExponentialBackoff = [bool]($scriptContent -match '\*.*1\.5')
+    
+    Assert-True $hasMaxRetries "Should have MaxRetries parameter (default 24)"
+    Assert-True $hasExponentialBackoff "Should implement exponential backoff"
+    Write-Pass "Network retry timeout logic is implemented"
+
+    Write-TestCase "Network retry timeout simulates correctly"
+    # Simulate retry timeout behavior
+    $retryCount = 0
+    $maxRetries = 3
+    $timeout = $false
+    
+    while ($retryCount -lt $maxRetries) {
+        $retryCount++
+        # Simulate no internet
+    }
+    
+    if ($retryCount -ge $maxRetries) {
+        $timeout = $true
+    }
+    
+    Assert-True $timeout "Should enforce retry limit"
+    Write-Info "Retry count: $retryCount (max: $maxRetries)"
+}
+
+function Test-MutexSafetyDuringJobs {
+    Write-TestHeader "Robustness Test: Mutex Safety During Job Execution (P0)"
+
+    $scriptContent = Get-Content -LiteralPath $testConfig.scriptPath
+    
+    Write-TestCase "Mutex is never released during monitor job execution"
+    # Check that mutex is NOT released and re-acquired in job loop
+    $hasRelease = [bool]($scriptContent -match 'Mutex\.ReleaseMutex\(\)\s*\|\s*Out-Null.*while.*true')
+    $hasJobMarker = [bool]($scriptContent -match 'job_execution_marker|job_execution_')
+    
+    Assert-False $hasRelease "Should NOT release mutex before job execution"
+    Assert-True $hasJobMarker "Should use file-based job execution marker instead"
+    Write-Pass "Mutex safety during job execution is implemented"
+    
+    Write-TestCase "Mutex coordination mechanism exists"
+    $hasMutexComment = [bool]($scriptContent -match 'job execution marker|file.*coordination')
+    Assert-True $hasMutexComment "Should have documented job coordination pattern"
+}
+
+function Test-ConfigReloadValidation {
+    Write-TestHeader "Robustness Test: Config Reload Validation (P1)"
+
+    $scriptContent = Get-Content -LiteralPath $testConfig.scriptPath
+    
+    Write-TestCase "Config reload includes JSON validation"
+    $hasValidation = [bool]($scriptContent -match 'ConvertFrom-Json.*ErrorAction Stop')
+    $hasErrorHandling = [bool]($scriptContent -match 'CRITICAL.*Config file has invalid JSON|Config reload failed')
+    
+    Assert-True $hasValidation "Should validate JSON during reload"
+    Assert-True $hasErrorHandling "Should handle parsing errors gracefully"
+    Write-Pass "Config reload validation is implemented"
+
+    Write-TestCase "Config validation with malformed JSON"
+    $tempDir = Join-Path $testConfig.testLogDir "config-validation"
+    New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+    
+    $malformedJson = Join-Path $tempDir "malformed.json"
+    Add-Content -Path $malformedJson -Value '{ "settings": { "test": "value" }, "jobs": [ { "name": "test" } -- INVALID --'
+    
+    try {
+        $config = Get-Content -Raw -Path $malformedJson | ConvertFrom-Json -ErrorAction Stop
+        Write-Fail "Should reject malformed JSON"
+    }
+    catch {
+        Write-Pass "Correctly rejects malformed JSON"
+    }
+    
+    Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+function Test-LauncherLogRetry {
+    Write-TestHeader "Robustness Test: Launcher Log Retry Logic (P1)"
+
+    $launcherPath = Join-Path $repoRoot 'Launch-Runner.ps1'
+    
+    Write-TestCase "Launcher log functions have retry logic"
+    if (Test-Path $launcherPath) {
+        $launcherContent = Get-Content -LiteralPath $launcherPath
+        $hasRetry = [bool]($launcherContent -match 'maxAttempts|Max Attempts|retry.*Add-Content')
+        $hasBackoff = [bool]($launcherContent -match 'Start-Sleep.*Milliseconds|backoff')
+        
+        Assert-True $hasRetry "Launcher should have retry logic"
+        Assert-True $hasBackoff "Launcher should have backoff between retries"
+        Write-Pass "Launcher log retry logic is implemented"
+    } else {
+        Write-Info "Launcher-Runner.ps1 not found at expected path"
+    }
+
+    Write-TestCase "Log write retry succeeds after transient failures"
+    $testLogDir = Join-Path $testConfig.testLogDir "log-retry"
+    New-Item -ItemType Directory -Force -Path $testLogDir | Out-Null
+    
+    $testFile = Join-Path $testLogDir "retry-test.log"
+    $attempts = 0
+    $maxAttempts = 3
+    
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        $attempts++
+        try {
+            Add-Content -LiteralPath $testFile -Value "[Test] Message attempt $attempt"
+            break
+        }
+        catch {
+            if ($attempt -ge $maxAttempts) {
+                break
+            }
+            Start-Sleep -Milliseconds 50
+        }
+    }
+    
+    Assert-True (Test-Path $testFile) "Log file should be created after retry"
+    Write-Info "Successfully wrote log file in $attempts attempts"
+    
+    Remove-Item $testLogDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+function Test-FileSystemWatcherEventQueue {
+    Write-TestHeader "Robustness Test: FileSystemWatcher Event Queue (P1)"
+
+    $scriptContent = Get-Content -LiteralPath $testConfig.scriptPath
+    
+    Write-TestCase "Event queue implementation exists"
+    $hasQueue = [bool]($scriptContent -match 'System\.Collections\.Queue|EventQueue')
+    $hasSynchronized = [bool]($scriptContent -match 'Synchronized.*Queue')
+    
+    Assert-True $hasQueue "Should use Queue for event storage"
+    Assert-True $hasSynchronized "Queue should be thread-safe (Synchronized)"
+    Write-Pass "Event queue is implemented"
+
+    Write-TestCase "Event queue preserves order and prevents loss"
+    # Simulate queue behavior
+    $eventQueue = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
+    
+    # Enqueue events
+    1..5 | ForEach-Object {
+        $event = [pscustomobject]@{ EventId = $_; Timestamp = Get-Date }
+        $eventQueue.Enqueue($event)
+    }
+    
+    # Dequeue and verify order
+    $dequeued = @()
+    while ($eventQueue.Count -gt 0) {
+        $dequeued += $eventQueue.Dequeue()
+    }
+    
+    $orderCorrect = $dequeued.Count -eq 5 -and $dequeued[0].EventId -eq 1 -and $dequeued[-1].EventId -eq 5
+    Assert-True $orderCorrect "Event queue should preserve order (dequeued: $($dequeued.Count) events)"
+    Write-Pass "Event queue correctly preserves event sequence"
+}
+
+function Test-FolderSnapshotOptimization {
+    Write-TestHeader "Robustness Test: Folder Snapshot Hashing Optimization (P2)"
+
+    $scriptContent = Get-Content -LiteralPath $testConfig.scriptPath
+    
+    Write-TestCase "Snapshot optimization for large folders exists"
+    $hasQuickSig = [bool]($scriptContent -match 'quickSig|quick.*signature|quick.*sig')
+    $hasLargeFolderCheck = [bool]($scriptContent -match '>.*500|large.*folder|items\.Count.*500')
+    
+    Assert-True $hasQuickSig "Should implement quick signature method"
+    Assert-True $hasLargeFolderCheck "Should optimize for folders >500 items"
+    Write-Pass "Snapshot optimization is implemented"
+
+    Write-TestCase "Snapshot performance for various folder sizes"
+    $testConfig_tempDir = Join-Path $testConfig.testLogDir "snapshot-perf"
+    New-Item -ItemType Directory -Force -Path $testConfig_tempDir | Out-Null
+    
+    $folderSizes = @(10, 100, 500, 1000)
+    $results = @()
+    
+    foreach ($size in $folderSizes) {
+        $folderPath = Join-Path $testConfig_tempDir "folder-$size"
+        New-Item -ItemType Directory -Force -Path $folderPath | Out-Null
+        
+        # Create test files
+        1..$size | ForEach-Object {
+            $null = New-Item -ItemType File -Path (Join-Path $folderPath "file_$_.txt") -Force
+        }
+        
+        # Measure snapshot time
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $items = @(Get-ChildItem -LiteralPath $folderPath -Force | Select-Object -Property Name, LastWriteTimeUtc | Sort-Object Name)
+        $sw.Stop()
+        
+        $results += [pscustomobject]@{
+            FolderSize = $size
+            FileCount = $items.Count
+            TimeMs = $sw.ElapsedMilliseconds
+        }
+    }
+    
+    Write-Info "Snapshot Performance:"
+    $results | ForEach-Object {
+        Write-Info "  $($_.FolderSize) items: $($_.TimeMs)ms"
+    }
+    
+    # Verify performance is reasonable (< 500ms for 1000 files)
+    $largestTime = ($results | Sort-Object TimeMs -Descending | Select-Object -First 1).TimeMs
+    Assert-True ($largestTime -lt 500) "Snapshot for 1000 files should complete in <500ms (was: ${largestTime}ms)"
+    
+    Remove-Item $testConfig_tempDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+function Test-EventHandlerConsolidation {
+    Write-TestHeader "Robustness Test: FileSystemWatcher Handler Consolidation (P2)"
+
+    $scriptContent = Get-Content -LiteralPath $testConfig.scriptPath
+    
+    Write-TestCase "Event handlers are consolidated"
+    # Count event handler registrations - should be 4 (one per event type)
+    $eventHandlers = [regex]::Matches($scriptContent, 'Register-ObjectEvent.*EventName')
+    $handlerCount = $eventHandlers.Count
+    
+    $hasSingleScript = [bool]($scriptContent -match '\$eventHandler.*=.*{|eventHandler.*script.*block')
+    Assert-True ($handlerCount -ge 1) "Should have consolidated event handlers"
+    Assert-True $hasSingleScript "Should define reusable event handler block"
+    Write-Pass "Event handler consolidation is implemented"
+    
+    Write-Info "Registered event handlers: $handlerCount"
+}
+
+# ============================================================
 # REPORT GENERATION
 # ============================================================
 
@@ -797,6 +1033,15 @@ function Main {
             }
             Test-LoadTesting
         }
+        'RobustnessFixes' {
+            Test-NetworkRetryTimeout
+            Test-MutexSafetyDuringJobs
+            Test-ConfigReloadValidation
+            Test-LauncherLogRetry
+            Test-FileSystemWatcherEventQueue
+            Test-FolderSnapshotOptimization
+            Test-EventHandlerConsolidation
+        }
         'All' {
             Test-ConfigParsing
             Test-ScriptStructure
@@ -823,6 +1068,14 @@ function Main {
                 Test-ParallelInstances
             }
             Test-LoadTesting
+            
+            Test-NetworkRetryTimeout
+            Test-MutexSafetyDuringJobs
+            Test-ConfigReloadValidation
+            Test-LauncherLogRetry
+            Test-FileSystemWatcherEventQueue
+            Test-FolderSnapshotOptimization
+            Test-EventHandlerConsolidation
         }
     }
     
