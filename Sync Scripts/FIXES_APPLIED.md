@@ -1,6 +1,7 @@
 # Code Fixes: P0-P2 Bug Fixes and Optimizations
 
 ## Overview
+
 Applied comprehensive fixes for race conditions, bugs, and optimizations across the Nexus rclone backup system. All fixes have been tested and validated.
 
 ## Summary of Changes
@@ -8,9 +9,11 @@ Applied comprehensive fixes for race conditions, bugs, and optimizations across 
 ### P0 Fixes (Critical)
 
 #### 1. Network Retry Timeout Prevention
+
 **File**: `src/Run-RcloneJobs.ps1` - `Wait-ForInternetConnectivity` function
 **Issue**: Function could hang indefinitely if network never recovered
-**Fix**: 
+**Fix**:
+
 - Added `MaxRetries` parameter (default: 24 retries = ~12 minutes)
 - Implemented exponential backoff (1.5x multiplier, capped at 120s)
 - Added optional `-NoTimeout` switch for special cases
@@ -18,9 +21,11 @@ Applied comprehensive fixes for race conditions, bugs, and optimizations across 
 **Benefit**: Prevents process hangs; automatic fallback after timeout
 
 #### 2. Mutex Release During Job Execution
+
 **File**: `src/Run-RcloneJobs.ps1` - `Start-FolderMonitoring` function
 **Issue**: Mutex was released before job execution, creating window for duplicate monitors
 **Fix**:
+
 - Removed mutex release/re-acquire pattern
 - Introduced job execution marker file instead (`.job_execution_<jobname>`)
 - Mutex stays held during entire monitor loop + job execution
@@ -30,9 +35,11 @@ Applied comprehensive fixes for race conditions, bugs, and optimizations across 
 ### P1 Fixes (High Priority)
 
 #### 3. Config Reload Validation
+
 **File**: `src/Run-RcloneJobs.ps1` - Config reload section
 **Issue**: Monitor could crash if config JSON became corrupted mid-run
 **Fix**:
+
 - Added try-catch around `ConvertFrom-Json` with proper error logging
 - Added null checks for required config sections (`jobs` array)
 - Logs critical error but continues with existing config instead of crashing
@@ -40,9 +47,11 @@ Applied comprehensive fixes for race conditions, bugs, and optimizations across 
 **Benefit**: Robust handling of config corruption; monitor stays alive
 
 #### 4. Launcher Log Retry Logic
+
 **File**: `Launch-Runner.ps1` - `Write-LauncherLog` and `Write-LauncherErrorLog` functions
 **Issue**: Log writes could fail silently during concurrent access
 **Fix**:
+
 - Added retry logic (3 attempts max)
 - Incremental backoff: 50ms * attempt number
 - Graceful failure with warning to console
@@ -50,9 +59,11 @@ Applied comprehensive fixes for race conditions, bugs, and optimizations across 
 **Benefit**: More reliable logging; consistent with runner behavior
 
 #### 5. Event Queue for Folder Changes
+
 **File**: `src/Run-RcloneJobs.ps1` - `Add-FolderWatcher` function
 **Issue**: FileSystemWatcher events could be lost if folder changed rapidly (events overwrite single hashtable entry)
 **Fix**:
+
 - Consolidated four separate event handlers into one reusable handler
 - Changed from hashtable storage to `System.Collections.Queue`
 - Queue is thread-safe (Synchronized)
@@ -63,9 +74,11 @@ Applied comprehensive fixes for race conditions, bugs, and optimizations across 
 ### P2 Fixes (Medium Priority - Performance)
 
 #### 6. Folder Snapshot Hashing Optimization
+
 **File**: `src/Run-RcloneJobs.ps1` - `Get-FolderSnapshotSignature` function
 **Issue**: MD5 hash computed every 5 seconds for all folders; expensive for large folders
 **Fix**:
+
 - Implemented quick signature (count + timestamps + first/last filename)
 - Quick signature used for folders >500 items (99% accuracy, much faster)
 - Full MD5 hash used for smaller folders (collision resistance)
@@ -73,9 +86,11 @@ Applied comprehensive fixes for race conditions, bugs, and optimizations across 
 **Benefit**: 40-50% faster folder monitoring cycles for large folders
 
 #### 7. Consolidated Event Handlers
+
 **File**: `src/Run-RcloneJobs.ps1` - `Add-FolderWatcher` function
 **Issue**: Four identical event handlers (Changed, Created, Deleted, Renamed) created redundant callbacks
 **Fix**:
+
 - Extracted common logic into single `$eventHandler` script block
 - Reused handler for all four event types
 - Reduces code duplication and callback overhead
@@ -85,7 +100,7 @@ Applied comprehensive fixes for race conditions, bugs, and optimizations across 
 
 All fixes validated with automated tests:
 
-```
+```text
 ✓ Network Retry Timeout - Correctly times out after 3 retries (~2 seconds)
 ✓ Mutex Acquisition - Successfully acquires and releases mutex
 ✓ Config Validation - Rejects malformed JSON gracefully, continues operation
