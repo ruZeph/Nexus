@@ -147,6 +147,50 @@ The manager also records its own activity in `logs/manager.log` and `logs/manage
 
 ---
 
+## Task Scheduler Setup
+
+Use Task Scheduler only to start the single monitor process. Do not create one scheduled task per backup job. Add or edit individual jobs in `backup-jobs.json`; the monitor reads that file and runs every enabled job in it.
+
+### One-time task creation
+
+Run this once from PowerShell to create the scheduled task:
+
+```powershell
+schtasks /create /tn "Rclone Monitor Runner" /sc onlogon /ru "$env:USERNAME" /rl HIGHEST /it /f /tr 'powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Launch-Runner.ps1" -Mode monitor -TaskScheduler -Silent -IdleTimeSeconds 60'
+```
+
+What this does:
+
+- Creates one logon-triggered Task Scheduler job named `Rclone Monitor Runner`
+- Launches the monitor in hidden PowerShell mode so the runner can stay alive in the background
+- Passes `-TaskScheduler` so the launcher adds scheduler-specific behavior and notifications
+- Uses `-Mode monitor` so the runner watches the configured folders for changes
+- Uses `-Silent` so the console output stays minimal while Task Scheduler starts it
+- Uses `-IdleTimeSeconds 60` so the monitor waits for 60 seconds of quiet time before starting a job after file changes
+
+### Verify the task
+
+After creating it, confirm the task exists and is configured as expected:
+
+```powershell
+schtasks /query /tn "Rclone Monitor Runner" /v /fo list
+```
+
+You should see:
+
+- `Schedule Type: At logon time`
+- `Task To Run` pointing to `Launch-Runner.ps1`
+- `Mode monitor`
+- `TaskScheduler`
+- `Silent`
+- `IdleTimeSeconds 60`
+
+### How to add more jobs
+
+To add another backup job, edit `backup-jobs.json` and add a new item under `jobs`. The Task Scheduler task does not change. The single monitor task will pick up all enabled jobs from the config.
+
+---
+
 ### Config Schema
 
 #### Minimal example

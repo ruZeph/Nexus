@@ -385,7 +385,9 @@ try {
             Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Detached runner process started pid=$launchPid mode=$Mode"
 
             if ($null -ne $runnerProcess) {
-                Start-Sleep -Milliseconds 1200
+                # Give detached runner enough time to hit duplicate-instance exit paths
+                # so we do not log false 'started successfully' entries.
+                Start-Sleep -Milliseconds 2600
                 $stillRunning = Get-Process -Id $runnerProcess.Id -ErrorAction SilentlyContinue
                 if ($null -eq $stillRunning) {
                     Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Detached runner process exited immediately pid=$launchPid mode=$Mode"
@@ -427,7 +429,33 @@ try {
                         $detailMessage = "$detailMessage | stdout=$safeStdout"
                     }
 
-                    if ($exitCode -eq '0') {
+                    $isDuplicateInstanceExit = $false
+
+                    if (-not [string]::IsNullOrWhiteSpace($stderrSnippet) -and $stderrSnippet -match 'Another runner instance is already active') {
+                        $isDuplicateInstanceExit = $true
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($stdoutSnippet) -and $stdoutSnippet -match 'Another runner instance is already active') {
+                        $isDuplicateInstanceExit = $true
+                    }
+
+                    if (-not $isDuplicateInstanceExit) {
+                        $recentRunnerLines = @()
+                        $runnerLogPath = Join-Path $schedulerLogDir 'runner.log'
+                        if (Test-Path -LiteralPath $runnerLogPath) {
+                            try {
+                                $recentRunnerLines = @(Get-Content -LiteralPath $runnerLogPath -Tail 40 -ErrorAction Stop)
+                            }
+                            catch {
+                                $recentRunnerLines = @()
+                            }
+                        }
+
+                        if (($recentRunnerLines -join "`n") -match 'Another runner instance is already active\. Exiting\.') {
+                            $isDuplicateInstanceExit = $true
+                        }
+                    }
+
+                    if ($exitCode -eq '0' -or $isDuplicateInstanceExit) {
                         Write-LauncherLog -LogDir $schedulerLogDir -Message "$detailMessage | note=detached runner exited normally (often already-running instance)."
                     }
                     else {

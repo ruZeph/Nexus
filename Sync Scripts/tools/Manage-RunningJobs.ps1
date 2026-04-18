@@ -1,5 +1,6 @@
 param(
-    [string]$LogsPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'logs')
+    [string]$LogsPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'logs'),
+    [string]$TaskName = 'Rclone Monitor Runner'
 )
 
 Set-StrictMode -Version Latest
@@ -20,16 +21,16 @@ function Write-Ok {
     Write-Host "[OK] $Message" -ForegroundColor Green
 }
 
-function Write-ManagerEventLog {
+function Write-ManagerStatusLog {
     param(
         [Parameter(Mandatory = $true)][string]$LogsPath,
         [Parameter(Mandatory = $true)][string]$Message,
-        [switch]$Error
+        [switch]$WriteFailure
     )
 
     $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $entry = "[$stamp] [MANAGER] $Message"
-    $targetName = if ($Error) { 'manager-error.log' } else { 'manager.log' }
+    $targetName = if ($WriteFailure) { 'manager-error.log' } else { 'manager.log' }
     $targetPath = Join-Path $LogsPath $targetName
 
     New-Item -ItemType Directory -Force -Path $LogsPath | Out-Null
@@ -179,6 +180,7 @@ function Get-RunnerHeartbeatStatus {
         IsFresh = $false
         Timestamp = $null
         Line = $null
+        ProcessId = $null
     }
 
     if (-not (Test-Path -LiteralPath $LogFile)) {
@@ -191,6 +193,9 @@ function Get-RunnerHeartbeatStatus {
         if ($line -match '^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\].*(\[RESOURCE\] context=monitor-loop|Folder monitoring started\.)') {
             $result.Found = $true
             $result.Line = $line
+            if ($line -match 'pid=(\d+)') {
+                $result.ProcessId = [int]$Matches[1]
+            }
             try {
                 $result.Timestamp = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)
                 $ageSeconds = ((Get-Date) - $result.Timestamp).TotalSeconds
@@ -202,7 +207,186 @@ function Get-RunnerHeartbeatStatus {
         }
     }
 
+    if ($null -eq $result.ProcessId) {
+        for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+            $line = [string]$lines[$i]
+            if ($line -match 'Detached scheduler job started successfully pid=(\d+) mode=monitor') {
+                $result.ProcessId = [int]$Matches[1]
+                break
+            }
+        }
+    }
+
     return $result
+}
+
+function Get-TaskSchedulerStatus {
+    param([Parameter(Mandatory = $true)][string]$TaskName)
+
+    try {
+        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        $taskInfo = Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction Stop
+        return [pscustomobject]@{
+            Found = $true
+            State = [string]$task.State
+            LastRunTime = $taskInfo.LastRunTime
+            LastTaskResult = [string]$taskInfo.LastTaskResult
+            NextRunTime = $taskInfo.NextRunTime
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            Found = $false
+            State = 'Unknown'
+            LastRunTime = $null
+            LastTaskResult = 'Unknown'
+            NextRunTime = $null
+        }
+    }
+}
+
+function Get-TaskSchedulerActionDetails {
+    param([Parameter(Mandatory = $true)][string]$TaskName)
+
+    try {
+        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        $execAction = $task.Actions | Select-Object -First 1
+
+        if ($null -eq $execAction) {
+            throw 'No scheduled task action found.'
+        }
+
+        $actionPath = [string]$execAction.Path
+        $actionArgs = [string]$execAction.Arguments
+        $actionLine = if ([string]::IsNullOrWhiteSpace($actionArgs)) { $actionPath } else { "$actionPath $actionArgs" }
+
+        return [pscustomobject]@{
+            Path = $actionPath
+            Arguments = $actionArgs
+            CommandLine = $actionLine
+        }
+    }
+    catch {
+        try {
+            $xmlText = [string](& schtasks /query /tn $TaskName /xml 2>$null)
+            if ([string]::IsNullOrWhiteSpace($xmlText)) {
+                return $null
+            }
+
+            [xml]$taskXml = $xmlText
+            $execNode = $taskXml.Task.Actions.Exec
+            if ($null -eq $execNode) {
+                return $null
+            }
+
+            $actionPath = [string]$execNode.Command
+            $actionArgs = [string]$execNode.Arguments
+            $actionLine = if ([string]::IsNullOrWhiteSpace($actionArgs)) { $actionPath } else { "$actionPath $actionArgs" }
+
+            return [pscustomobject]@{
+                Path = $actionPath
+                Arguments = $actionArgs
+                CommandLine = $actionLine
+            }
+        }
+        catch {
+            return $null
+        }
+    }
+}
+
+function Get-LatestTaskSchedulerRecord {
+    param([Parameter(Mandatory = $true)][string]$TaskName)
+
+    $logName = 'Microsoft-Windows-TaskScheduler/Operational'
+    $fullTaskPath = '\' + $TaskName
+
+    try {
+        $taskRecords = @(Get-WinEvent -LogName $logName -MaxEvents 200 -ErrorAction Stop)
+        foreach ($taskRecord in $taskRecords) {
+            $message = [string]$taskRecord.Message
+            if ($message -match [regex]::Escape($fullTaskPath)) {
+                return [pscustomobject]@{
+                    TimeCreated = $taskRecord.TimeCreated
+                    Id = [int]$taskRecord.Id
+                    LevelDisplayName = [string]$taskRecord.LevelDisplayName
+                    Message = $message
+                }
+            }
+        }
+    }
+    catch {
+    }
+
+    return $null
+}
+
+function Resolve-LiveMonitorPid {
+    param([Parameter(Mandatory = $true)][string]$RunnerLogFile)
+
+    if (-not (Test-Path -LiteralPath $RunnerLogFile)) {
+        return $null
+    }
+
+    $lines = @(Get-Content -LiteralPath $RunnerLogFile -Tail 800 -ErrorAction SilentlyContinue)
+    if ($lines.Count -eq 0) {
+        return $null
+    }
+
+    $candidatePids = New-Object System.Collections.Generic.List[int]
+
+    for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+        $line = [string]$lines[$i]
+        if ($line -match '\[RESOURCE\] context=monitor-(start|loop) pid=(\d+)') {
+            $pidCandidate = [int]$Matches[2]
+            if (-not $candidatePids.Contains($pidCandidate)) {
+                [void]$candidatePids.Add($pidCandidate)
+            }
+            continue
+        }
+
+        if ($line -match 'Detached runner process confirmed alive pid=(\d+) mode=monitor') {
+            $pidCandidate = [int]$Matches[1]
+            if (-not $candidatePids.Contains($pidCandidate)) {
+                [void]$candidatePids.Add($pidCandidate)
+            }
+        }
+    }
+
+    foreach ($candidatePid in $candidatePids) {
+        try {
+            $proc = Get-Process -Id $candidatePid -ErrorAction Stop
+            if ($null -ne $proc -and $proc.ProcessName -in @('powershell', 'pwsh')) {
+                return $candidatePid
+            }
+        }
+        catch {
+        }
+    }
+
+    return $null
+}
+
+function Get-LiveMonitorProcessDetails {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+
+    try {
+        $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+        if ($null -eq $proc) {
+            return $null
+        }
+
+        return [pscustomobject]@{
+            ProcessId = [int]$proc.ProcessId
+            ParentProcessId = [int]$proc.ParentProcessId
+            Name = [string]$proc.Name
+            CommandLine = [string]$proc.CommandLine
+            StartTime = Get-ProcessStartTime -ProcessId $ProcessId
+        }
+    }
+    catch {
+        return $null
+    }
 }
 
 function Show-Processes {
@@ -232,7 +416,7 @@ function Request-SafeStop {
     $requestPath = Join-Path $LogDir 'stop-request.txt'
     $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     Set-Content -LiteralPath $requestPath -Value "[$stamp] $Reason" -Encoding UTF8
-    Write-ManagerEventLog -LogsPath $LogDir -Message "Safe stop requested. Reason: $Reason"
+    Write-ManagerStatusLog -LogsPath $LogDir -Message "Safe stop requested. Reason: $Reason"
     Write-Ok "Stop request written to $requestPath"
     Write-Warn 'The runner will stop after the current job finishes. This avoids stopping mid-transfer.'
 }
@@ -252,11 +436,11 @@ function Stop-ProcessTree {
 
         Stop-Process -Id $ProcessId -Force -ErrorAction Stop
         Write-Ok "Stopped process $ProcessId"
-        Write-ManagerEventLog -LogsPath $LogsPath -Message "Force stopped process tree rooted at PID $ProcessId"
+        Write-ManagerStatusLog -LogsPath $LogsPath -Message "Force stopped process tree rooted at PID $ProcessId"
     }
     catch {
         Write-Warn ("Failed to stop process {0}: {1}" -f $ProcessId, $_.Exception.Message)
-        Write-ManagerEventLog -LogsPath $LogsPath -Message ("Failed to stop process tree rooted at PID {0}: {1}" -f $ProcessId, $_.Exception.Message) -Error
+        Write-ManagerStatusLog -LogsPath $LogsPath -Message ("Failed to stop process tree rooted at PID {0}: {1}" -f $ProcessId, $_.Exception.Message) -WriteFailure
     }
 }
 
@@ -276,7 +460,7 @@ try {
         $runnerLog = Join-Path $LogsPath 'runner.log'
         if (-not (Test-Path -LiteralPath $runnerLog)) {
             Write-Warn "Runner log not found: $runnerLog"
-            Write-ManagerEventLog -LogsPath $LogsPath -Message "Runner log missing: $runnerLog" -Error
+            Write-ManagerStatusLog -LogsPath $LogsPath -Message "Runner log missing: $runnerLog" -WriteFailure
         }
 
         $latestJobLog = Get-LatestJobLogPath -LogFile $runnerLog
@@ -286,7 +470,37 @@ try {
 
         $entries = @(Get-RcloneJobProcesses)
         $mutexState = Get-RunnerMutexState
-        $heartbeat = Get-RunnerHeartbeatStatus -LogFile $runnerLog
+        $resolvedMonitorPid = Resolve-LiveMonitorPid -RunnerLogFile $runnerLog
+        $taskStatus = Get-TaskSchedulerStatus -TaskName $TaskName
+        $taskAction = Get-TaskSchedulerActionDetails -TaskName $TaskName
+        $latestTaskEvent = Get-LatestTaskSchedulerRecord -TaskName $TaskName
+        $resolvedMonitorDetails = $null
+
+        if ($null -ne $resolvedMonitorPid) {
+            $resolvedMonitorDetails = Get-LiveMonitorProcessDetails -ProcessId $resolvedMonitorPid
+        }
+
+        if ($taskStatus.Found) {
+            $lastRunText = if ($taskStatus.LastRunTime) { $taskStatus.LastRunTime.ToString('yyyy-MM-dd HH:mm:ss') } else { 'n/a' }
+            $nextRunText = if ($taskStatus.NextRunTime) { $taskStatus.NextRunTime.ToString('yyyy-MM-dd HH:mm:ss') } else { 'n/a' }
+            Write-Info ("Task Scheduler: state={0} lastRun={1} lastResult={2} nextRun={3}" -f $taskStatus.State, $lastRunText, $taskStatus.LastTaskResult, $nextRunText)
+        }
+
+        if ($null -ne $taskAction) {
+            $actionLine = $taskAction.CommandLine
+            if ($actionLine.Length -gt 220) {
+                $actionLine = $actionLine.Substring(0, 217) + '...'
+            }
+            Write-Info ("Task Scheduler action: {0}" -f $actionLine)
+        }
+
+        if ($null -ne $latestTaskEvent) {
+            $summary = [string]$latestTaskEvent.Message
+            if ($summary.Length -gt 140) {
+                $summary = $summary.Substring(0, 137) + '...'
+            }
+            Write-Info ("Latest Windows scheduler event: id={0} level={1} time={2} msg={3}" -f $latestTaskEvent.Id, $latestTaskEvent.LevelDisplayName, $latestTaskEvent.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss'), $summary)
+        }
 
         if ($mutexState.IsBusy) {
             Write-Warn $mutexState.Message
@@ -294,7 +508,7 @@ try {
 
         if ($previousActiveProcessCount -gt 0 -and $entries.Count -eq 0) {
             Write-Warn 'No active runner/job processes found. The process may have stopped, crashed, or been killed.'
-            Write-ManagerEventLog -LogsPath $LogsPath -Message 'Active runner/job processes disappeared. This may indicate stop, crash, or kill.' -Error
+            Write-ManagerStatusLog -LogsPath $LogsPath -Message 'Active runner/job processes disappeared. This may indicate stop, crash, or kill.' -WriteFailure
         }
 
         if ($entries.Count -eq 0 -and $mutexState.IsBusy) {
@@ -303,17 +517,43 @@ try {
                 Write-Info 'Tip: launch the manager under the same account/session as Task Scheduler to view process details.'
             }
 
-            if ($heartbeat.Found -and $heartbeat.IsFresh) {
-                Write-Info ("Runner heartbeat is recent ({0}). Monitor appears healthy." -f $heartbeat.Timestamp.ToString('yyyy-MM-dd HH:mm:ss'))
+            if ($null -ne $resolvedMonitorPid) {
+                Write-Ok ("Actual running monitor PID: {0}" -f $resolvedMonitorPid)
             }
-            elseif ($heartbeat.Found -and -not $heartbeat.IsFresh) {
-                Write-Warn ("Last runner heartbeat seen at {0}. It may have stopped." -f $heartbeat.Timestamp.ToString('yyyy-MM-dd HH:mm:ss'))
+            else {
+                Write-Warn 'Could not verify an active monitor PID from logs/process list yet.'
+            }
+
+            if ($null -ne $resolvedMonitorDetails) {
+                Write-Host ''
+                $resolvedMonitorDetails |
+                    Select-Object ProcessId, ParentProcessId, Name, StartTime, @{Name='CommandLine';Expression={
+                        $line = [string]$_.CommandLine
+                        if ([string]::IsNullOrWhiteSpace($line)) {
+                            return '(not visible from Windows process table)'
+                        }
+                        if ($line.Length -gt 120) { return $line.Substring(0, 117) + '...' }
+                        return $line
+                    }} |
+                    Format-Table -AutoSize
+
+                if ($null -ne $taskAction) {
+                    Write-Info ("Resolved from Task Scheduler action: {0}" -f $taskAction.CommandLine)
+                }
             }
         }
 
         $previousActiveProcessCount = $entries.Count
 
-        Show-Processes -Entries $entries
+        if ($entries.Count -gt 0) {
+            Show-Processes -Entries $entries
+        }
+        elseif ($null -ne $resolvedMonitorDetails) {
+            Write-Info 'Showing resolved live monitor process details from Windows process table.'
+        }
+        elseif (-not $mutexState.IsBusy) {
+            Show-Processes -Entries $entries
+        }
 
         Write-Host ''
         Write-Host '1) Request safe stop for active monitor/job' -ForegroundColor Gray
@@ -368,7 +608,7 @@ try {
                 continue
             }
             '0' {
-                Write-ManagerEventLog -LogsPath $LogsPath -Message 'Operator exited the running job manager.'
+                Write-ManagerStatusLog -LogsPath $LogsPath -Message 'Operator exited the running job manager.'
                 Write-Info 'Exiting running job manager.'
                 return
             }

@@ -198,7 +198,7 @@ function Write-RunnerResourceLog {
         $threads = $proc.Threads.Count
         $handles = $proc.HandleCount
 
-        Write-RunnerLog -LogDir $LogDir -Message "[RESOURCE] context=$Context cpu_pct=$cpuPct working_set_mb=$workingMb private_mb=$privateMb handles=$handles threads=$threads"
+        Write-RunnerLog -LogDir $LogDir -Message "[RESOURCE] context=$Context pid=$PID cpu_pct=$cpuPct working_set_mb=$workingMb private_mb=$privateMb handles=$handles threads=$threads"
 
         $privateWarnMb = 250
         $workingWarnMb = 220
@@ -1169,6 +1169,8 @@ try {
         Write-RunnerLog -LogDir $logDir -Message $activeMsg
         Write-ShellMessage -Message $activeMsg -IsSilent $Silent
         Show-EventNotification -Title 'Nexus Sync' -Message $activeMsg -Enabled:$NotifyOnEvents
+        Write-RunnerLog -LogDir $logDir -Message 'Duplicate launch detected. Exiting in 1 second.'
+        Start-Sleep -Seconds 1
         exit 0
     }
     $ownsMutex = $true
