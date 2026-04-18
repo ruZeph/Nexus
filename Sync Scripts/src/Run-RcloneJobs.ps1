@@ -31,7 +31,28 @@ function Write-JobLog {
     }
 
     $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    Add-Content -LiteralPath $LogFile -Value "[$ts] $Message"
+    $line = "[$ts] $Message"
+    $maxAttempts = 4
+
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try {
+            [System.IO.File]::AppendAllText($LogFile, $line + [Environment]::NewLine)
+            return
+        }
+        catch {
+            if ($attempt -ge $maxAttempts) {
+                # Logging failures should not kill monitor/run flow.
+                try {
+                    Write-Host "[WARN] Failed to write log file '$LogFile': $($_.Exception.Message)" -ForegroundColor Yellow
+                }
+                catch {
+                }
+                return
+            }
+
+            Start-Sleep -Milliseconds (60 * $attempt)
+        }
+    }
 }
 
 function Write-RunnerLog {

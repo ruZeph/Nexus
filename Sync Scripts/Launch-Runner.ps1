@@ -381,6 +381,7 @@ try {
         try {
             $runnerProcess = Start-ScheduledRunnerProcess -RunnerPath $runnerPath -RunnerParams $runnerParams -StartupStdOutPath $startupStdOutPath -StartupStdErrPath $startupStdErrPath
             $launchPid = if ($null -eq $runnerProcess) { 'unknown' } else { [string]$runnerProcess.Id }
+            $showSchedulerWindow = $false
             Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Detached runner process started pid=$launchPid mode=$Mode"
 
             if ($null -ne $runnerProcess) {
@@ -390,7 +391,7 @@ try {
                     Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Detached runner process exited immediately pid=$launchPid mode=$Mode"
                     $exitCode = 'unknown'
                     try {
-                        $runnerProcess.Refresh()
+                        $runnerProcess.WaitForExit(2000) | Out-Null
                         $exitCode = [string]$runnerProcess.ExitCode
                     }
                     catch {
@@ -414,29 +415,35 @@ try {
                         }
                     }
 
-                    $detailParts = @(
-                        "[LAUNCHER] Detached runner exited early pid=$launchPid mode=$Mode exitcode=$exitCode"
-                    )
+                    $detailMessage = "[LAUNCHER] Detached runner exited early pid=$launchPid mode=$Mode exitcode=$exitCode"
 
                     if (-not [string]::IsNullOrWhiteSpace($stderrSnippet)) {
                         $safeStderr = ($stderrSnippet -replace '[\r\n]+', ' ')
-                        $detailParts += "stderr=$safeStderr"
+                        $detailMessage = "$detailMessage | stderr=$safeStderr"
                     }
 
                     if (-not [string]::IsNullOrWhiteSpace($stdoutSnippet)) {
                         $safeStdout = ($stdoutSnippet -replace '[\r\n]+', ' ')
-                        $detailParts += "stdout=$safeStdout"
+                        $detailMessage = "$detailMessage | stdout=$safeStdout"
                     }
 
-                    Write-LauncherErrorLog -LogDir $schedulerLogDir -Message ($detailParts -join ' | ')
+                    if ($exitCode -eq '0') {
+                        Write-LauncherLog -LogDir $schedulerLogDir -Message "$detailMessage | note=detached runner exited normally (often already-running instance)."
+                    }
+                    else {
+                        Write-LauncherErrorLog -LogDir $schedulerLogDir -Message $detailMessage
+                    }
                 }
                 else {
                     Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Detached scheduler job started successfully pid=$launchPid mode=$Mode"
                     Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Detached runner process confirmed alive pid=$launchPid mode=$Mode"
+                    $showSchedulerWindow = $true
                 }
             }
 
-            Start-TaskSchedulerWindow -RunnerPath $runnerPath -Mode $Mode -ResolvedConfigPath $resolvedConfigPath -JobName $JobName -SourceFolder $SourceFolder -Operation $Operation -LogDir $schedulerLogDir
+            if ($showSchedulerWindow) {
+                Start-TaskSchedulerWindow -RunnerPath $runnerPath -Mode $Mode -ResolvedConfigPath $resolvedConfigPath -JobName $JobName -SourceFolder $SourceFolder -Operation $Operation -LogDir $schedulerLogDir
+            }
         }
         catch {
             Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Detached runner process failed to start mode=$Mode error=$($_.Exception.Message)"

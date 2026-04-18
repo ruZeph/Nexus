@@ -113,6 +113,44 @@ function Get-RcloneJobProcesses {
     return $entries | Sort-Object Kind, ProcessId
 }
 
+function Get-RunnerMutexState {
+    param([string]$MutexName = 'Global\RcloneBackupRunner')
+
+    $result = [pscustomobject]@{
+        IsBusy = $false
+        AccessDenied = $false
+        Message = 'Runner mutex is free.'
+    }
+
+    $mutex = $null
+    try {
+        $mutex = [System.Threading.Mutex]::new($false, $MutexName)
+        if (-not $mutex.WaitOne(0)) {
+            $result.IsBusy = $true
+            $result.Message = 'Runner mutex is owned by another active instance.'
+            return $result
+        }
+
+        $mutex.ReleaseMutex() | Out-Null
+        return $result
+    }
+    catch [System.UnauthorizedAccessException] {
+        $result.IsBusy = $true
+        $result.AccessDenied = $true
+        $result.Message = 'Runner mutex exists but is not accessible from this session (another instance likely running under a different security context).'
+        return $result
+    }
+    catch {
+        $result.Message = "Unable to check runner mutex state: $($_.Exception.Message)"
+        return $result
+    }
+    finally {
+        if ($null -ne $mutex) {
+            $mutex.Dispose()
+        }
+    }
+}
+
 function Get-LatestJobLogPath {
     param([Parameter(Mandatory = $true)][string]$LogFile)
 
@@ -128,6 +166,43 @@ function Get-LatestJobLogPath {
     }
 
     return $null
+}
+
+function Get-RunnerHeartbeatStatus {
+    param(
+        [Parameter(Mandatory = $true)][string]$LogFile,
+        [int]$FreshWithinSeconds = 180
+    )
+
+    $result = [pscustomobject]@{
+        Found = $false
+        IsFresh = $false
+        Timestamp = $null
+        Line = $null
+    }
+
+    if (-not (Test-Path -LiteralPath $LogFile)) {
+        return $result
+    }
+
+    $lines = @(Get-Content -LiteralPath $LogFile -Tail 300 -ErrorAction SilentlyContinue)
+    for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+        $line = [string]$lines[$i]
+        if ($line -match '^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\].*(\[RESOURCE\] context=monitor-loop|Folder monitoring started\.)') {
+            $result.Found = $true
+            $result.Line = $line
+            try {
+                $result.Timestamp = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)
+                $ageSeconds = ((Get-Date) - $result.Timestamp).TotalSeconds
+                $result.IsFresh = ($ageSeconds -ge 0 -and $ageSeconds -le $FreshWithinSeconds)
+            }
+            catch {
+            }
+            break
+        }
+    }
+
+    return $result
 }
 
 function Show-Processes {
@@ -210,10 +285,32 @@ try {
         }
 
         $entries = @(Get-RcloneJobProcesses)
+        $mutexState = Get-RunnerMutexState
+        $heartbeat = Get-RunnerHeartbeatStatus -LogFile $runnerLog
+
+        if ($mutexState.IsBusy) {
+            Write-Warn $mutexState.Message
+        }
+
         if ($previousActiveProcessCount -gt 0 -and $entries.Count -eq 0) {
             Write-Warn 'No active runner/job processes found. The process may have stopped, crashed, or been killed.'
             Write-ManagerEventLog -LogsPath $LogsPath -Message 'Active runner/job processes disappeared. This may indicate stop, crash, or kill.' -Error
         }
+
+        if ($entries.Count -eq 0 -and $mutexState.IsBusy) {
+            Write-Info 'No visible runner process details in this session, but mutex indicates an active instance.'
+            if ($mutexState.AccessDenied) {
+                Write-Info 'Tip: launch the manager under the same account/session as Task Scheduler to view process details.'
+            }
+
+            if ($heartbeat.Found -and $heartbeat.IsFresh) {
+                Write-Info ("Runner heartbeat is recent ({0}). Monitor appears healthy." -f $heartbeat.Timestamp.ToString('yyyy-MM-dd HH:mm:ss'))
+            }
+            elseif ($heartbeat.Found -and -not $heartbeat.IsFresh) {
+                Write-Warn ("Last runner heartbeat seen at {0}. It may have stopped." -f $heartbeat.Timestamp.ToString('yyyy-MM-dd HH:mm:ss'))
+            }
+        }
+
         $previousActiveProcessCount = $entries.Count
 
         Show-Processes -Entries $entries
@@ -283,6 +380,11 @@ try {
     }
 }
 catch {
+    if ($_.Exception -is [System.Management.Automation.PipelineStoppedException]) {
+        Write-Info 'Interrupted by Ctrl+C. Exiting manager.'
+        exit 0
+    }
+
     Write-Host "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 }
