@@ -11,7 +11,8 @@ param(
     [switch]$FailFast,
     [switch]$Silent,
     [switch]$Interactive,
-    [switch]$PreviewOnly
+    [switch]$PreviewOnly,
+    [switch]$TaskScheduler
 )
 
 Set-StrictMode -Version Latest
@@ -72,7 +73,8 @@ function Build-RunnerArgs {
         [int]$SelectedIdle,
         [string]$SelectedOperation,
         [bool]$SelectedFailFast,
-        [bool]$SelectedSilent
+        [bool]$SelectedSilent,
+        [bool]$SelectedWaitForNetwork
     )
 
     $argsList = @('-ConfigPath', $ResolvedConfigPath)
@@ -113,7 +115,42 @@ function Build-RunnerArgs {
         $argsList += '-Silent'
     }
 
+    if ($SelectedWaitForNetwork) {
+        $argsList += '-WaitForNetwork'
+    }
+
     return $argsList
+}
+
+function ConvertTo-CmdArgument {
+    param([AllowNull()][string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return '""'
+    }
+
+    return '"' + ($Value -replace '"', '""') + '"'
+}
+
+function Start-TaskSchedulerWindow {
+    param(
+        [Parameter(Mandatory = $true)][string]$RunnerPath,
+        [Parameter(Mandatory = $true)][string[]]$RunnerArgs,
+        [Parameter(Mandatory = $true)][string]$LogDir
+    )
+
+    $startStamp = Get-Date -Format 'yyyy-MM-dd ddd HH:mm:ss'
+    $statusLines = @(
+        'title Nexus Sync Job Scheduler',
+        "echo [STEP] Sync job started at $startStamp",
+        "echo [INFO] Logs: $LogDir"
+    )
+
+    $powershellArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $RunnerPath) + $RunnerArgs
+    $runnerCommand = $powershellArgs | ForEach-Object { ConvertTo-CmdArgument -Value $_ }
+    $commandLine = ($statusLines + ("powershell.exe $($runnerCommand -join ' ')")) -join ' & '
+
+    Start-Process -FilePath 'cmd.exe' -ArgumentList @('/k', $commandLine) | Out-Null
 }
 
 try {
@@ -174,11 +211,18 @@ try {
         }
     }
 
-    $runnerArgs = Build-RunnerArgs -SelectedMode $Mode -ResolvedConfigPath $resolvedConfigPath -SelectedJobName $JobName -SelectedSourceFolder $SourceFolder -SelectedIdle $IdleTimeSeconds -SelectedOperation $Operation -SelectedFailFast:$FailFast -SelectedSilent:$Silent
+    $waitForNetwork = [bool]$TaskScheduler
+    $runnerArgs = Build-RunnerArgs -SelectedMode $Mode -ResolvedConfigPath $resolvedConfigPath -SelectedJobName $JobName -SelectedSourceFolder $SourceFolder -SelectedIdle $IdleTimeSeconds -SelectedOperation $Operation -SelectedFailFast:$FailFast -SelectedSilent:$Silent -SelectedWaitForNetwork:$waitForNetwork
 
     Write-Info "Runner: $runnerPath"
     Write-Info "Mode: $Mode"
     Write-Info ("Args: {0}" -f ($runnerArgs -join ' '))
+
+    if ($TaskScheduler) {
+        Write-Info 'TaskScheduler mode enabled; opening a separate cmd window for visibility.'
+        Start-TaskSchedulerWindow -RunnerPath $runnerPath -RunnerArgs $runnerArgs -LogDir (Join-Path $PSScriptRoot 'logs')
+        exit 0
+    }
 
     if ($PreviewOnly) {
         Write-Info 'PreviewOnly enabled; command not executed.'

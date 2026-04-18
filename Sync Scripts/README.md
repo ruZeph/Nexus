@@ -366,6 +366,7 @@ All commands use `Launch-Runner.ps1` as the entry point.
 | Run eligible jobs | `.\Launch-Runner.ps1 -Mode run` |
 | Force all jobs | `.\Launch-Runner.ps1 -Mode run -Force` |
 | Silent (for schedulers) | `.\Launch-Runner.ps1 -Mode run -Silent` |
+| Task Scheduler window + network wait | `.\Launch-Runner.ps1 -Mode run -TaskScheduler` |
 | Custom config path | `.\Launch-Runner.ps1 -Mode run -ConfigPath .\backup-jobs.json` |
 | Start monitor | `.\Launch-Runner.ps1 -Mode monitor -IdleTimeSeconds 10` |
 
@@ -376,6 +377,12 @@ All commands use `Launch-Runner.ps1` as the entry point.
 | `0` | Success |
 | `1` | Runtime failure |
 | `2` | Configuration or validation failure |
+
+**Task Scheduler mode:**
+
+- Opens a separate `cmd.exe` window so you can see the run start time and log location
+- Waits for network connectivity before starting the job run
+- Writes startup and connectivity status into the normal runner logs under `logs/`
 
 ---
 

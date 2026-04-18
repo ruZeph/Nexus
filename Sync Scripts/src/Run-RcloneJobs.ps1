@@ -7,6 +7,7 @@ param(
     [switch]$DryRun,
     [switch]$FailFast,
     [switch]$Silent,
+    [switch]$WaitForNetwork,
     [ValidateSet('copy', 'sync')][string]$Operation
 )
 
@@ -145,6 +146,22 @@ function Test-InternetConnectivity {
     }
 }
 
+function Wait-ForInternetConnectivity {
+    param(
+        [Parameter(Mandatory = $true)][string]$LogDir,
+        [int]$RetryIntervalSeconds = 30
+    )
+
+    while (-not (Test-InternetConnectivity)) {
+        $msg = "No internet connectivity detected. Waiting $RetryIntervalSeconds seconds before retrying."
+        Write-RunnerLog -LogDir $LogDir -Message $msg
+        Write-Host "[INFO] $msg" -ForegroundColor Cyan
+        Start-Sleep -Seconds $RetryIntervalSeconds
+    }
+
+    Write-RunnerLog -LogDir $LogDir -Message 'Internet connectivity detected. Continuing scheduled run.'
+}
+
 function Resolve-RcloneExe {
     $cmd = Get-Command rclone.exe -ErrorAction SilentlyContinue
     if (-not $cmd) {
@@ -215,7 +232,6 @@ function Remove-OldJobLog {
         return
     }
 
-    $toRemoveCount = $logFiles.Count - $KeepCount
     $toRemove = $logFiles[$KeepCount..($logFiles.Count - 1)]
     
     foreach ($stale in $toRemove) {
@@ -535,12 +551,12 @@ function Add-FolderWatcher {
             (Register-ObjectEvent -InputObject $watcher -EventName Changed -MessageData $eventData -Action {
                 $sync = $event.MessageData.WatcherSync
                 $folder = [string]$event.MessageData.FolderPath
-                $args = $event.SourceEventArgs
+                $fileEvent = $event.SourceEventArgs
                 if ($null -ne $sync -and -not [string]::IsNullOrWhiteSpace($folder)) {
                     $sync.ChangedFolders[$folder] = [pscustomobject]@{
                         Time = Get-Date
-                        ChangeType = [string]$args.ChangeType
-                        FullPath = [string]$args.FullPath
+                        ChangeType = [string]$fileEvent.ChangeType
+                        FullPath = [string]$fileEvent.FullPath
                         OldFullPath = ''
                     }
                 }
@@ -548,12 +564,12 @@ function Add-FolderWatcher {
             (Register-ObjectEvent -InputObject $watcher -EventName Created -MessageData $eventData -Action {
                 $sync = $event.MessageData.WatcherSync
                 $folder = [string]$event.MessageData.FolderPath
-                $args = $event.SourceEventArgs
+                $fileEvent = $event.SourceEventArgs
                 if ($null -ne $sync -and -not [string]::IsNullOrWhiteSpace($folder)) {
                     $sync.ChangedFolders[$folder] = [pscustomobject]@{
                         Time = Get-Date
-                        ChangeType = [string]$args.ChangeType
-                        FullPath = [string]$args.FullPath
+                        ChangeType = [string]$fileEvent.ChangeType
+                        FullPath = [string]$fileEvent.FullPath
                         OldFullPath = ''
                     }
                 }
@@ -561,12 +577,12 @@ function Add-FolderWatcher {
             (Register-ObjectEvent -InputObject $watcher -EventName Deleted -MessageData $eventData -Action {
                 $sync = $event.MessageData.WatcherSync
                 $folder = [string]$event.MessageData.FolderPath
-                $args = $event.SourceEventArgs
+                $fileEvent = $event.SourceEventArgs
                 if ($null -ne $sync -and -not [string]::IsNullOrWhiteSpace($folder)) {
                     $sync.ChangedFolders[$folder] = [pscustomobject]@{
                         Time = Get-Date
-                        ChangeType = [string]$args.ChangeType
-                        FullPath = [string]$args.FullPath
+                        ChangeType = [string]$fileEvent.ChangeType
+                        FullPath = [string]$fileEvent.FullPath
                         OldFullPath = ''
                     }
                 }
@@ -574,13 +590,13 @@ function Add-FolderWatcher {
             (Register-ObjectEvent -InputObject $watcher -EventName Renamed -MessageData $eventData -Action {
                 $sync = $event.MessageData.WatcherSync
                 $folder = [string]$event.MessageData.FolderPath
-                $args = $event.SourceEventArgs
+                $fileEvent = $event.SourceEventArgs
                 if ($null -ne $sync -and -not [string]::IsNullOrWhiteSpace($folder)) {
                     $sync.ChangedFolders[$folder] = [pscustomobject]@{
                         Time = Get-Date
-                        ChangeType = [string]$args.ChangeType
-                        FullPath = [string]$args.FullPath
-                        OldFullPath = [string]$args.OldFullPath
+                        ChangeType = [string]$fileEvent.ChangeType
+                        FullPath = [string]$fileEvent.FullPath
+                        OldFullPath = [string]$fileEvent.OldFullPath
                     }
                 }
             })
@@ -970,7 +986,12 @@ try {
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
     # Check internet connectivity first
-    if (-not (Test-InternetConnectivity)) {
+    if ($WaitForNetwork) {
+        Write-RunnerLog -LogDir $logDir -Message 'WaitForNetwork enabled. Polling until internet connectivity is available.'
+        Write-Host '[INFO] Waiting for internet connectivity before starting run...' -ForegroundColor Cyan
+        Wait-ForInternetConnectivity -LogDir $logDir
+    }
+    elseif (-not (Test-InternetConnectivity)) {
         $msg = 'No internet connectivity detected. Backup operations require internet access. Exiting.'
         Write-RunnerLog -LogDir $logDir -Message $msg
         Write-Host "[ERROR] $msg" -ForegroundColor Red
