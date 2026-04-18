@@ -74,7 +74,8 @@ function Build-RunnerArgs {
         [string]$SelectedOperation,
         [bool]$SelectedFailFast,
         [bool]$SelectedSilent,
-        [bool]$SelectedWaitForNetwork
+        [bool]$SelectedWaitForNetwork,
+        [bool]$SelectedNotifyOnEvents
     )
 
     $argsList = @('-ConfigPath', $ResolvedConfigPath)
@@ -119,7 +120,66 @@ function Build-RunnerArgs {
         $argsList += '-WaitForNetwork'
     }
 
+    if ($SelectedNotifyOnEvents) {
+        $argsList += '-NotifyOnEvents'
+    }
+
     return $argsList
+}
+
+function Build-RunnerParameters {
+    param(
+        [string]$SelectedMode,
+        [string]$ResolvedConfigPath,
+        [string]$SelectedJobName,
+        [string]$SelectedSourceFolder,
+        [int]$SelectedIdle,
+        [string]$SelectedOperation,
+        [bool]$SelectedFailFast,
+        [bool]$SelectedSilent,
+        [bool]$SelectedWaitForNetwork,
+        [bool]$SelectedNotifyOnEvents
+    )
+
+    $parameters = @{ ConfigPath = $ResolvedConfigPath }
+
+    if ($SelectedMode -eq 'monitor') {
+        $parameters.Monitor = $true
+        $parameters.IdleTimeSeconds = $SelectedIdle
+    }
+    elseif ($SelectedMode -eq 'dryrun') {
+        $parameters.DryRun = $true
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($SelectedJobName)) {
+        $parameters.JobName = $SelectedJobName
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($SelectedSourceFolder)) {
+        $parameters.SourceFolder = $SelectedSourceFolder
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($SelectedOperation)) {
+        $parameters.Operation = $SelectedOperation
+    }
+
+    if ($SelectedFailFast) {
+        $parameters.FailFast = $true
+    }
+
+    if ($SelectedSilent) {
+        $parameters.Silent = $true
+    }
+
+    if ($SelectedWaitForNetwork) {
+        $parameters.WaitForNetwork = $true
+    }
+
+    if ($SelectedNotifyOnEvents) {
+        $parameters.NotifyOnEvents = $true
+    }
+
+    return $parameters
 }
 
 function ConvertTo-CmdArgument {
@@ -132,24 +192,76 @@ function ConvertTo-CmdArgument {
     return '"' + ($Value -replace '"', '""') + '"'
 }
 
+function ConvertTo-PowerShellArgument {
+    param([AllowNull()][string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return "''"
+    }
+
+    return "'" + ($Value -replace "'", "''") + "'"
+}
+
+function Start-ScheduledRunnerProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$RunnerPath,
+        [Parameter(Mandatory = $true)][hashtable]$RunnerParams
+    )
+
+    $argumentList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $RunnerPath)
+    foreach ($key in $RunnerParams.Keys) {
+        $value = $RunnerParams[$key]
+        if ($value -is [bool]) {
+            if ($value) {
+                $argumentList += "-$key"
+            }
+            continue
+        }
+
+        $argumentList += "-$key"
+        $argumentList += [string]$value
+    }
+
+    Start-Process -FilePath 'powershell.exe' -ArgumentList $argumentList | Out-Null
+}
+
 function Start-TaskSchedulerWindow {
     param(
         [Parameter(Mandatory = $true)][string]$RunnerPath,
-        [Parameter(Mandatory = $true)][string[]]$RunnerArgs,
+        [Parameter(Mandatory = $true)][string]$Mode,
+        [Parameter(Mandatory = $true)][string]$ResolvedConfigPath,
+        [AllowNull()][string]$JobName,
+        [AllowNull()][string]$SourceFolder,
+        [AllowNull()][string]$Operation,
         [Parameter(Mandatory = $true)][string]$LogDir
     )
 
     $startStamp = Get-Date -Format 'yyyy-MM-dd ddd HH:mm:ss'
+    $detailLines = @(
+        "echo [INFO] Mode: $Mode",
+        "echo [INFO] Config: $ResolvedConfigPath"
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($JobName)) {
+        $detailLines += "echo [INFO] JobName: $JobName"
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($SourceFolder)) {
+        $detailLines += "echo [INFO] SourceFolder: $SourceFolder"
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Operation)) {
+        $detailLines += "echo [INFO] Operation: $Operation"
+    }
+
     $statusLines = @(
         'title Nexus Sync Job Scheduler',
         "echo [STEP] Sync job started at $startStamp",
-        "echo [INFO] Logs: $LogDir"
+        "echo [INFO] Logs: $LogDir",
+        'echo [INFO] This window is only a notification. Close it anytime; the job keeps running.'
     )
 
-    $powershellArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $RunnerPath) + $RunnerArgs
-    $runnerCommand = $powershellArgs | ForEach-Object { ConvertTo-CmdArgument -Value $_ }
-    $commandLine = ($statusLines + ("powershell.exe $($runnerCommand -join ' ')")) -join ' & '
-
+    $commandLine = ($statusLines + $detailLines) -join ' & '
     Start-Process -FilePath 'cmd.exe' -ArgumentList @('/k', $commandLine) | Out-Null
 }
 
@@ -212,15 +324,18 @@ try {
     }
 
     $waitForNetwork = [bool]$TaskScheduler
-    $runnerArgs = Build-RunnerArgs -SelectedMode $Mode -ResolvedConfigPath $resolvedConfigPath -SelectedJobName $JobName -SelectedSourceFolder $SourceFolder -SelectedIdle $IdleTimeSeconds -SelectedOperation $Operation -SelectedFailFast:$FailFast -SelectedSilent:$Silent -SelectedWaitForNetwork:$waitForNetwork
+    $notifyOnEvents = [bool]$TaskScheduler
+    $runnerParams = Build-RunnerParameters -SelectedMode $Mode -ResolvedConfigPath $resolvedConfigPath -SelectedJobName $JobName -SelectedSourceFolder $SourceFolder -SelectedIdle $IdleTimeSeconds -SelectedOperation $Operation -SelectedFailFast:$FailFast -SelectedSilent:$Silent -SelectedWaitForNetwork:$waitForNetwork -SelectedNotifyOnEvents:$notifyOnEvents
+    $runnerArgs = Build-RunnerArgs -SelectedMode $Mode -ResolvedConfigPath $resolvedConfigPath -SelectedJobName $JobName -SelectedSourceFolder $SourceFolder -SelectedIdle $IdleTimeSeconds -SelectedOperation $Operation -SelectedFailFast:$FailFast -SelectedSilent:$Silent -SelectedWaitForNetwork:$waitForNetwork -SelectedNotifyOnEvents:$notifyOnEvents
 
     Write-Info "Runner: $runnerPath"
     Write-Info "Mode: $Mode"
     Write-Info ("Args: {0}" -f ($runnerArgs -join ' '))
 
     if ($TaskScheduler) {
-        Write-Info 'TaskScheduler mode enabled; opening a separate cmd window for visibility.'
-        Start-TaskSchedulerWindow -RunnerPath $runnerPath -RunnerArgs $runnerArgs -LogDir (Join-Path $PSScriptRoot 'logs')
+        Write-Info 'TaskScheduler mode enabled; starting the job in a detached process.'
+        Start-ScheduledRunnerProcess -RunnerPath $runnerPath -RunnerParams $runnerParams
+        Start-TaskSchedulerWindow -RunnerPath $runnerPath -Mode $Mode -ResolvedConfigPath $resolvedConfigPath -JobName $JobName -SourceFolder $SourceFolder -Operation $Operation -LogDir (Join-Path $PSScriptRoot 'logs')
         exit 0
     }
 
@@ -229,7 +344,7 @@ try {
         exit 0
     }
 
-    & $runnerPath @runnerArgs
+    & $runnerPath @runnerParams
     exit $LASTEXITCODE
 }
 catch {

@@ -382,6 +382,7 @@ All commands use `Launch-Runner.ps1` as the entry point.
 
 - Opens a separate `cmd.exe` window so you can see the run start time and log location
 - Waits for network connectivity before starting the job run
+- Shows short event notifications for important scheduler events (already-running instance, network interruption, and recovery)
 - Writes startup and connectivity status into the normal runner logs under `logs/`
 
 ---

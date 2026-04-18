@@ -8,6 +8,7 @@ param(
     [switch]$FailFast,
     [switch]$Silent,
     [switch]$WaitForNetwork,
+    [switch]$NotifyOnEvents,
     [ValidateSet('copy', 'sync')][string]$Operation
 )
 
@@ -143,6 +144,44 @@ function Test-InternetConnectivity {
     }
     catch {
         return $false
+    }
+}
+
+function ConvertTo-CmdSafeText {
+    param([AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return ''
+    }
+
+    return ($Text -replace '[\r\n]+', ' ' -replace '[&|<>^]', ' ').Trim()
+}
+
+function Show-EventNotification {
+    param(
+        [Parameter(Mandatory = $true)][string]$Title,
+        [Parameter(Mandatory = $true)][string]$Message,
+        [int]$VisibleSeconds = 12,
+        [switch]$Enabled
+    )
+
+    if (-not $Enabled) {
+        return
+    }
+
+    if ($VisibleSeconds -lt 4) {
+        $VisibleSeconds = 4
+    }
+
+    $safeTitle = ConvertTo-CmdSafeText -Text $Title
+    $safeMessage = ConvertTo-CmdSafeText -Text $Message
+    $cmdLine = "title $safeTitle & echo [NOTICE] $safeMessage & timeout /t $VisibleSeconds /nobreak >nul & exit"
+
+    try {
+        Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', $cmdLine) | Out-Null
+    }
+    catch {
+        # Notification failures should never break sync execution.
     }
 }
 
@@ -369,6 +408,19 @@ function Test-RateLimitError {
 
     $content = Get-Content -Raw -LiteralPath $LogFile
     return $content -match '(403|429|TooManyRequests|rate limit|Rate limit exceeded|Throttled)'
+}
+
+function Test-NetworkInterruptionError {
+    param(
+        [Parameter(Mandatory = $true)][string]$LogFile
+    )
+
+    if (-not (Test-Path -LiteralPath $LogFile)) {
+        return $false
+    }
+
+    $content = Get-Content -Raw -LiteralPath $LogFile
+    return $content -match '(i/o timeout|TLS handshake timeout|connection reset by peer|connection refused|network is unreachable|no route to host|temporary failure in name resolution|lookup .* no such host|dial tcp.*timeout|context deadline exceeded|use of closed network connection)'
 }
 
 function Invoke-RcloneLive {
@@ -930,7 +982,7 @@ function Start-FolderMonitoring {
                     
                     try {
                         # Run job via recursive call
-                        & $PSCommandPath -JobName $jobName -ConfigPath $ConfigPath -DryRun:$DryRun -Silent:$IsSilent -ErrorAction SilentlyContinue
+                        & $PSCommandPath -JobName $jobName -ConfigPath $ConfigPath -DryRun:$DryRun -Silent:$IsSilent -WaitForNetwork:$WaitForNetwork -NotifyOnEvents:$NotifyOnEvents -ErrorAction SilentlyContinue
                         $jobExitCode = $LASTEXITCODE
                         if ($null -eq $jobExitCode) {
                             $jobExitCode = if ($?) { 0 } else { 1 }
@@ -999,7 +1051,10 @@ try {
     }
 
     if (-not $mutex.WaitOne(0)) {
-        Write-RunnerLog -LogDir $logDir -Message 'Another runner instance is already active. Exiting.'
+        $activeMsg = 'Another runner instance is already active. Exiting.'
+        Write-RunnerLog -LogDir $logDir -Message $activeMsg
+        Write-ShellMessage -Message $activeMsg -IsSilent $Silent
+        Show-EventNotification -Title 'Nexus Sync' -Message $activeMsg -Enabled:$NotifyOnEvents
         exit 0
     }
     $ownsMutex = $true
@@ -1168,8 +1223,31 @@ try {
             }
 
             $exitCode = Invoke-RcloneLive -ExePath $rcloneExe -Arguments $rcloneArgs -LogFile $jobLog -IsSilent $Silent
-            
+
             $isRateLimited = Test-RateLimitError -LogFile $jobLog
+            $isNetworkInterrupted = ((-not (Test-InternetConnectivity)) -or (Test-NetworkInterruptionError -LogFile $jobLog))
+
+            if ($exitCode -ne 0 -and $isNetworkInterrupted -and -not $DryRun) {
+                $netMsg = "[$name] Network interruption detected mid-sync. Waiting for reconnection and retrying once."
+                Write-JobLog -LogFile $jobLog -Message $netMsg
+                Write-RunnerLog -LogDir $logDir -Message $netMsg
+                Write-ShellMessage -Message $netMsg -IsSilent $Silent
+                Show-EventNotification -Title 'Nexus Sync Network Interrupt' -Message "$name lost connectivity during sync. Waiting to retry." -Enabled:$NotifyOnEvents
+
+                Wait-ForInternetConnectivity -LogDir $logDir -RetryIntervalSeconds 20
+
+                Write-JobLog -LogFile $jobLog -Message 'RETRY after connectivity restored'
+                $exitCode = Invoke-RcloneLive -ExePath $rcloneExe -Arguments $rcloneArgs -LogFile $jobLog -IsSilent $Silent
+                $isRateLimited = Test-RateLimitError -LogFile $jobLog
+
+                if ($exitCode -eq 0) {
+                    $recoveredMsg = "[$name] Sync recovered successfully after network interruption."
+                    Write-JobLog -LogFile $jobLog -Message $recoveredMsg
+                    Write-RunnerLog -LogDir $logDir -Message $recoveredMsg
+                    Write-ShellMessage -Message $recoveredMsg -IsSilent $Silent
+                    Show-EventNotification -Title 'Nexus Sync Recovered' -Message "$name resumed after reconnecting to network." -Enabled:$NotifyOnEvents
+                }
+            }
 
             if ($exitCode -eq 0) {
                 Write-JobLog -LogFile $jobLog -Message 'DONE exitcode=0'
