@@ -31,7 +31,7 @@ A collection of personal automation scripts, utilities, and system tools for Win
 
 - **[Achievement Watcher Fix](Python/ACHWatcher_Cleanup_Fix/)**: Cleans and restores Achievement Watcher files.
 - **[Cyberpunk DLC Copy](Python/Cyberpunk%20DLC%20Copy/)**: Batch copy and organize Cyberpunk 2077 DLCs.
-- **[Excel Batch Delete](Python/Excel%20Batch%20Delete/)**: Bulk row removal for Excel spreadsheets.
+- ~**[Excel Batch Delete](Python/Excel%20Batch%20Delete/)**: Bulk row removal for Excel spreadsheets.~ Broken, Don't use
 - **[GDrive Image Hosting](Python/GDrive%20ImageHosting/)**: Batch convert Google Drive file links to direct, markdown-ready URLs.
 - **[Ping Test](Python/Ping%20Test/)**: Multi-target network connectivity checker.
 
