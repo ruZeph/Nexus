@@ -37,7 +37,26 @@ function Write-LauncherLog {
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
     $runnerLog = Join-Path $LogDir 'runner.log'
     $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    Add-Content -LiteralPath $runnerLog -Value "[$stamp] $Message"
+    $line = "[$stamp] $Message"
+    $maxAttempts = 3
+
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try {
+            Add-Content -LiteralPath $runnerLog -Value $line
+            return
+        }
+        catch {
+            if ($attempt -ge $maxAttempts) {
+                try {
+                    Write-Host "[WARN] Failed to write launcher log after $maxAttempts attempts: $($_.Exception.Message)" -ForegroundColor Yellow
+                }
+                catch {
+                }
+                return
+            }
+            Start-Sleep -Milliseconds (50 * $attempt)
+        }
+    }
 }
 
 function Write-LauncherErrorLog {
@@ -49,7 +68,26 @@ function Write-LauncherErrorLog {
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
     $errorLog = Join-Path $LogDir 'runner-error.log'
     $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    Add-Content -LiteralPath $errorLog -Value "[$stamp] $Message"
+    $line = "[$stamp] $Message"
+    $maxAttempts = 3
+
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try {
+            Add-Content -LiteralPath $errorLog -Value $line
+            return
+        }
+        catch {
+            if ($attempt -ge $maxAttempts) {
+                try {
+                    Write-Host "[WARN] Failed to write launcher error log after $maxAttempts attempts: $($_.Exception.Message)" -ForegroundColor Yellow
+                }
+                catch {
+                }
+                return
+            }
+            Start-Sleep -Milliseconds (50 * $attempt)
+        }
+    }
 }
 
 function Remove-OldLauncherLogs {

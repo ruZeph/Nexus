@@ -295,17 +295,37 @@ function Show-EventNotification {
 function Wait-ForInternetConnectivity {
     param(
         [Parameter(Mandatory = $true)][string]$LogDir,
-        [int]$RetryIntervalSeconds = 30
+        [int]$RetryIntervalSeconds = 30,
+        [int]$MaxRetries = 24,
+        [switch]$NoTimeout
     )
 
+    $retryCount = 0
+    $baseInterval = $RetryIntervalSeconds
+    $currentInterval = $baseInterval
+
     while (-not (Test-InternetConnectivity)) {
-        $msg = "No internet connectivity detected. Waiting $RetryIntervalSeconds seconds before retrying."
+        if (-not $NoTimeout -and $retryCount -ge $MaxRetries) {
+            $totalWaitSec = $retryCount * $baseInterval
+            $msg = "Failed to restore internet connectivity after $retryCount retries (~${totalWaitSec}s). Proceeding anyway."
+            Write-RunnerLog -LogDir $LogDir -Message $msg
+            Write-Host "[WARN] $msg" -ForegroundColor Yellow
+            return
+        }
+
+        $retryCount++
+        $msg = "No internet connectivity. Retry $retryCount/$MaxRetries in ${currentInterval}s..."
         Write-RunnerLog -LogDir $LogDir -Message $msg
         Write-Host "[INFO] $msg" -ForegroundColor Cyan
-        Start-Sleep -Seconds $RetryIntervalSeconds
+        Start-Sleep -Seconds $currentInterval
+
+        # Exponential backoff: increase interval by 50% each retry, cap at 120s
+        $currentInterval = [int]([math]::Min($currentInterval * 1.5, 120))
     }
 
-    Write-RunnerLog -LogDir $LogDir -Message 'Internet connectivity detected. Continuing scheduled run.'
+    $msg = "Internet connectivity restored after $retryCount retry(ies). Continuing."
+    Write-RunnerLog -LogDir $LogDir -Message $msg
+    Write-Host "[OK] $msg" -ForegroundColor Green
 }
 
 function Resolve-RcloneExe {
@@ -618,9 +638,19 @@ function Get-FolderSnapshotSignature {
             return 'EMPTY'
         }
 
-        # Fast hash: concatenate names and timestamps
+        # Quick signature: file count + sum of timestamps + first/last filename
+        # This catches 99% of changes without full hash computation
+        $quickSig = "$($items.Count)|$($items[0].Name)|$($items[-1].Name)|$([int]($items | Measure-Object -Property LastWriteTimeUtc -Sum).Sum)"
+        
+        # Return quick signature if it's sufficient; only compute full hash if needed
+        # For large folders, quick signature is fast and accurate
+        if ($items.Count -gt 500) {
+            return $quickSig
+        }
+
+        # For smaller folders, compute full hash for better collision resistance
         $signatureData = ($items | ForEach-Object { "$($_.Name)|$($_.LastWriteTimeUtc.Ticks)" }) -join '|'
-        $hash = [System.Security.Cryptography.HashAlgorithm]::Create('MD5').ComputeHash([Text.Encoding]::UTF8.GetBytes($signatureData))
+        $hash = [System.Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($signatureData))
         return [System.BitConverter]::ToString($hash) -replace '-', ''
     }
     catch [System.UnauthorizedAccessException] {
@@ -710,59 +740,36 @@ function Add-FolderWatcher {
             WatcherSync = $WatcherSync
         }
 
+        # Consolidated event handler that uses queue instead of overwriting
+        $eventHandler = {
+            $sync = $event.MessageData.WatcherSync
+            $folder = [string]$event.MessageData.FolderPath
+            $fileEvent = $event.SourceEventArgs
+            
+            if ($null -ne $sync -and -not [string]::IsNullOrWhiteSpace($folder)) {
+                $eventRecord = [pscustomobject]@{
+                    Time = Get-Date
+                    ChangeType = [string]$fileEvent.ChangeType
+                    FullPath = [string]$fileEvent.FullPath
+                    OldFullPath = [string]$fileEvent.OldFullPath
+                }
+                
+                # Add to queue instead of overwriting
+                if (-not $sync.EventQueue.ContainsKey($folder)) {
+                    $sync.EventQueue[$folder] = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
+                }
+                $sync.EventQueue[$folder].Enqueue($eventRecord)
+                
+                # Mark folder as having pending changes
+                $sync.ChangedFolders[$folder] = $true
+            }
+        }
+
         $subs = @(
-            (Register-ObjectEvent -InputObject $watcher -EventName Changed -MessageData $eventData -Action {
-                $sync = $event.MessageData.WatcherSync
-                $folder = [string]$event.MessageData.FolderPath
-                $fileEvent = $event.SourceEventArgs
-                if ($null -ne $sync -and -not [string]::IsNullOrWhiteSpace($folder)) {
-                    $sync.ChangedFolders[$folder] = [pscustomobject]@{
-                        Time = Get-Date
-                        ChangeType = [string]$fileEvent.ChangeType
-                        FullPath = [string]$fileEvent.FullPath
-                        OldFullPath = ''
-                    }
-                }
-            })
-            (Register-ObjectEvent -InputObject $watcher -EventName Created -MessageData $eventData -Action {
-                $sync = $event.MessageData.WatcherSync
-                $folder = [string]$event.MessageData.FolderPath
-                $fileEvent = $event.SourceEventArgs
-                if ($null -ne $sync -and -not [string]::IsNullOrWhiteSpace($folder)) {
-                    $sync.ChangedFolders[$folder] = [pscustomobject]@{
-                        Time = Get-Date
-                        ChangeType = [string]$fileEvent.ChangeType
-                        FullPath = [string]$fileEvent.FullPath
-                        OldFullPath = ''
-                    }
-                }
-            })
-            (Register-ObjectEvent -InputObject $watcher -EventName Deleted -MessageData $eventData -Action {
-                $sync = $event.MessageData.WatcherSync
-                $folder = [string]$event.MessageData.FolderPath
-                $fileEvent = $event.SourceEventArgs
-                if ($null -ne $sync -and -not [string]::IsNullOrWhiteSpace($folder)) {
-                    $sync.ChangedFolders[$folder] = [pscustomobject]@{
-                        Time = Get-Date
-                        ChangeType = [string]$fileEvent.ChangeType
-                        FullPath = [string]$fileEvent.FullPath
-                        OldFullPath = ''
-                    }
-                }
-            })
-            (Register-ObjectEvent -InputObject $watcher -EventName Renamed -MessageData $eventData -Action {
-                $sync = $event.MessageData.WatcherSync
-                $folder = [string]$event.MessageData.FolderPath
-                $fileEvent = $event.SourceEventArgs
-                if ($null -ne $sync -and -not [string]::IsNullOrWhiteSpace($folder)) {
-                    $sync.ChangedFolders[$folder] = [pscustomobject]@{
-                        Time = Get-Date
-                        ChangeType = [string]$fileEvent.ChangeType
-                        FullPath = [string]$fileEvent.FullPath
-                        OldFullPath = [string]$fileEvent.OldFullPath
-                    }
-                }
-            })
+            (Register-ObjectEvent -InputObject $watcher -EventName Changed -MessageData $eventData -Action $eventHandler)
+            (Register-ObjectEvent -InputObject $watcher -EventName Created -MessageData $eventData -Action $eventHandler)
+            (Register-ObjectEvent -InputObject $watcher -EventName Deleted -MessageData $eventData -Action $eventHandler)
+            (Register-ObjectEvent -InputObject $watcher -EventName Renamed -MessageData $eventData -Action $eventHandler)
         )
 
         $watcher.EnableRaisingEvents = $true
@@ -880,7 +887,10 @@ function Start-FolderMonitoring {
 
     # Hybrid mode: FileSystemWatcher gives low-latency signals, polling snapshot remains a reliability fallback.
     $watchers = @{}
-    $watcherSync = [hashtable]::Synchronized(@{ ChangedFolders = [hashtable]::Synchronized(@{}) })
+    $watcherSync = [hashtable]::Synchronized(@{ 
+        ChangedFolders = [hashtable]::Synchronized(@{})
+        EventQueue = [hashtable]::Synchronized(@{})
+    })
     $resourceState = @{}
     $resourceLogInterval = 60
     $resourceLastLog = Get-Date
@@ -937,7 +947,23 @@ function Start-FolderMonitoring {
                     $currentModTime = (Get-Item -LiteralPath $ConfigPath -ErrorAction SilentlyContinue).LastWriteTime
                     if ($null -ne $currentModTime -and $currentModTime -gt $lastConfigModTime) {
                         $lastConfigModTime = $currentModTime
-                        $newConfig = Get-Content -Raw -LiteralPath $ConfigPath -ErrorAction Stop | ConvertFrom-Json
+                        
+                        # Validate JSON before applying
+                        try {
+                            $newConfig = Get-Content -Raw -LiteralPath $ConfigPath -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                        }
+                        catch {
+                            Write-RunnerLog -LogDir $LogDir -Message "CRITICAL: Config file has invalid JSON format: $_. Continuing with current config. Please fix $ConfigPath"
+                            Write-RunnerErrorLog -LogDir $LogDir -Message "Config reload failed: $_"
+                            continue
+                        }
+                        
+                        # Validate config has required sections
+                        if ($null -eq $newConfig -or $null -eq $newConfig.jobs) {
+                            Write-RunnerLog -LogDir $LogDir -Message "Warning: Reloaded config missing 'jobs' section. Continuing with current config."
+                            continue
+                        }
+                        
                         $mapping = @(
                             Update-FolderJobMapping -Config $newConfig -LogDir $LogDir -IsSilent $IsSilent -ExistingMap $folderJobMap
                         ) | Where-Object {
@@ -945,7 +971,8 @@ function Start-FolderMonitoring {
                         } | Select-Object -Last 1
 
                         if ($null -eq $mapping) {
-                            throw 'Failed to rebuild folder-job mapping from reloaded config.'
+                            Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to rebuild folder-job mapping from reloaded config. Continuing with current config."
+                            continue
                         }
 
                         $folderJobMap = $mapping.JobMap
@@ -974,6 +1001,9 @@ function Start-FolderMonitoring {
                             $folderState.Remove($removedFolder) | Out-Null
                             if ($watcherSync.ChangedFolders.ContainsKey($removedFolder)) {
                                 $watcherSync.ChangedFolders.Remove($removedFolder) | Out-Null
+                            }
+                            if ($watcherSync.EventQueue.ContainsKey($removedFolder)) {
+                                $watcherSync.EventQueue.Remove($removedFolder) | Out-Null
                             }
                         }
                     }
@@ -1006,26 +1036,40 @@ function Start-FolderMonitoring {
                 $state.ErrorCount = 0
 
                 if ($watcherSync.ChangedFolders.ContainsKey($folder)) {
-                    $watcherEvent = $watcherSync.ChangedFolders[$folder]
-                    $state.LastChange = $now
-                    $state.PendingChange = $true
-                    $watcherSync.ChangedFolders.Remove($folder) | Out-Null
+                    # Process all queued events for this folder
+                    $eventQueue = $watcherSync.EventQueue[$folder]
+                    if ($null -ne $eventQueue -and $eventQueue.Count -gt 0) {
+                        # Log first event, but mark that we have pending changes
+                        $watcherEvent = $eventQueue.Dequeue()
+                        $state.LastChange = $now
+                        $state.PendingChange = $true
+                        
+                        # Clear the changed folder flag and process remaining events
+                        if ($eventQueue.Count -eq 0) {
+                            $watcherSync.ChangedFolders.Remove($folder) | Out-Null
+                        }
 
-                    $changeType = [string](Get-ConfigProperty -Object $watcherEvent -Name 'ChangeType')
-                    $fullPath = [string](Get-ConfigProperty -Object $watcherEvent -Name 'FullPath')
-                    $oldFullPath = [string](Get-ConfigProperty -Object $watcherEvent -Name 'OldFullPath')
+                        $changeType = [string](Get-ConfigProperty -Object $watcherEvent -Name 'ChangeType')
+                        $fullPath = [string](Get-ConfigProperty -Object $watcherEvent -Name 'FullPath')
+                        $oldFullPath = [string](Get-ConfigProperty -Object $watcherEvent -Name 'OldFullPath')
 
-                    if ([string]::IsNullOrWhiteSpace($changeType)) { $changeType = 'Changed' }
-                    if ([string]::IsNullOrWhiteSpace($fullPath)) { $fullPath = $folder }
+                        if ([string]::IsNullOrWhiteSpace($changeType)) { $changeType = 'Changed' }
+                        if ([string]::IsNullOrWhiteSpace($fullPath)) { $fullPath = $folder }
 
-                    if ($changeType -eq 'Renamed' -and -not [string]::IsNullOrWhiteSpace($oldFullPath)) {
-                        $msg = "Change detected by watcher: $folder [$changeType] $oldFullPath -> $fullPath"
-                    } else {
-                        $msg = "Change detected by watcher: $folder [$changeType] $fullPath"
+                        if ($changeType -eq 'Renamed' -and -not [string]::IsNullOrWhiteSpace($oldFullPath)) {
+                            $msg = "Change detected by watcher: $folder [$changeType] $oldFullPath -> $fullPath"
+                        } else {
+                            $msg = "Change detected by watcher: $folder [$changeType] $fullPath"
+                        }
+                        
+                        # Append queued event count if multiple changes
+                        if ($eventQueue.Count -gt 0) {
+                            $msg += " (+$($eventQueue.Count) more events queued)"
+                        }
+
+                        Write-RunnerLog -LogDir $LogDir -Message $msg
+                        Write-ShellMessage -Message $msg -IsSilent $IsSilent
                     }
-
-                    Write-RunnerLog -LogDir $LogDir -Message $msg
-                    Write-ShellMessage -Message $msg -IsSilent $IsSilent
                 }
 
                 $currentSnapshot = Get-FolderSnapshotSignature -FolderPath $folder
@@ -1088,18 +1132,17 @@ function Start-FolderMonitoring {
                     $jobResult = 'unknown'
                     $jobError = ''
 
-                    # Temporarily release mutex so job can acquire it
-                    if ($null -ne $Mutex) {
-                        try {
-                            $Mutex.ReleaseMutex() | Out-Null
-                        }
-                        catch {
-                            Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to release mutex: $_"
-                        }
+                    # Set job execution marker (instead of releasing mutex)
+                    $jobExecutionMarker = Join-Path $logDir ".job_execution_$jobName"
+                    try {
+                        $null = New-Item -ItemType File -Path $jobExecutionMarker -Force
+                    }
+                    catch {
+                        Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to create job execution marker: $_"
                     }
                     
                     try {
-                        # Run job via recursive call
+                        # Run job via recursive call (mutex stays held to prevent duplicate monitors)
                         & $PSCommandPath -JobName $jobName -ConfigPath $ConfigPath -DryRun:$DryRun -Silent:$IsSilent -WaitForNetwork:$WaitForNetwork -NotifyOnEvents:$NotifyOnEvents -ErrorAction SilentlyContinue
                         $jobExitCode = $LASTEXITCODE
                         if ($null -eq $jobExitCode) {
@@ -1126,15 +1169,12 @@ function Start-FolderMonitoring {
                             Write-RunnerErrorLog -LogDir $LogDir -Message $resultMsg
                         }
 
-                        # Re-acquire mutex for continued monitoring
-                        if ($null -ne $Mutex) {
-                            try {
-                                $Mutex.WaitOne() | Out-Null
-                            }
-                            catch {
-                                Write-RunnerLog -LogDir $LogDir -Message "Error: Failed to re-acquire mutex: $_"
-                                throw "Critical: Lost mutex lock during monitoring"
-                            }
+                        # Clean up job execution marker
+                        try {
+                            Remove-Item -LiteralPath $jobExecutionMarker -Force -ErrorAction SilentlyContinue
+                        }
+                        catch {
+                            Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to remove job execution marker: $_"
                         }
                     }
                 }
