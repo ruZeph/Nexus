@@ -796,7 +796,7 @@ function Test-ConfigReloadValidation {
     Add-Content -Path $malformedJson -Value '{ "settings": { "test": "value" }, "jobs": [ { "name": "test" } -- INVALID --'
     
     try {
-        $config = Get-Content -Raw -Path $malformedJson | ConvertFrom-Json -ErrorAction Stop
+        $null = Get-Content -Raw -Path $malformedJson | ConvertFrom-Json -ErrorAction Stop
         Write-Fail "Should reject malformed JSON"
     }
     catch {
@@ -871,8 +871,8 @@ function Test-FileSystemWatcherEventQueue {
     
     # Enqueue events
     1..5 | ForEach-Object {
-        $event = [pscustomobject]@{ EventId = $_; Timestamp = Get-Date }
-        $eventQueue.Enqueue($event)
+        $queueEvent = [pscustomobject]@{ EventId = $_; Timestamp = Get-Date }
+        $eventQueue.Enqueue($queueEvent)
     }
     
     # Dequeue and verify order
