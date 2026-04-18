@@ -377,6 +377,12 @@ try {
         $startupStdOutPath = Join-Path $launcherTempDir ("detached-start-$launchStamp-stdout.log")
         $startupStdErrPath = Join-Path $launcherTempDir ("detached-start-$launchStamp-stderr.log")
         Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Detached runner launch requested mode=$Mode config=$resolvedConfigPath"
+        Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Launcher log folder: $launcherTempDir"
+        Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Launcher stdout log file: $startupStdOutPath"
+        Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Launcher stderr log file: $startupStdErrPath"
+        Write-Info "Launcher log folder: $launcherTempDir"
+        Write-Info "Launcher stdout log file: $startupStdOutPath"
+        Write-Info "Launcher stderr log file: $startupStdErrPath"
         Write-Info 'TaskScheduler mode enabled; starting the job in a detached process.'
         try {
             $runnerProcess = Start-ScheduledRunnerProcess -RunnerPath $runnerPath -RunnerParams $runnerParams -StartupStdOutPath $startupStdOutPath -StartupStdErrPath $startupStdErrPath
