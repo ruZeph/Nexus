@@ -229,7 +229,7 @@ To add another backup job, edit `backup-jobs.json` and add a new item under `job
 | --- | --- | --- | --- |
 | `continueOnJobError` | boolean | `true` | Keep running remaining jobs if one fails |
 | `defaultOperation` | string | `sync` | `copy` or `sync` |
-| `logRetentionCount` | integer | `10` | Log files retained per job |
+| `logRetentionCount` | integer | `10` | Log files retained per job, capped at 10 |
 | `jobIntervalSeconds` | integer | `0` | Global delay between jobs in run mode |
 | `defaultExtraArgs` | string or string[] | — | Appended to every rclone call |
 
@@ -261,7 +261,7 @@ Named presets for reusable rclone argument sets:
 | `profile` | string | No | — | Must exist in `profiles` if set |
 | `operation` | string | No | resolved | Overrides profile/settings operation |
 | `interval` | integer | No | `settings.jobIntervalSeconds` | Seconds before next job |
-| `logRetentionCount` | integer | No | `settings.logRetentionCount` | Per-job log retention override |
+| `logRetentionCount` | integer | No | `settings.logRetentionCount` | Per-job log retention override, capped at 10 |
 | `extraArgs` | string or string[] | No | — | Appended after defaults and profile args |
 
 #### Precedence rules

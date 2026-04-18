@@ -372,6 +372,10 @@ function Remove-OldJobLog {
         return
     }
 
+    if ($KeepCount -gt 10) {
+        $KeepCount = 10
+    }
+
     $logFiles = @(Get-ChildItem -LiteralPath $JobLogDir -Filter '*.log' -File | Sort-Object LastWriteTime -Descending)
     
     if ($logFiles.Count -le $KeepCount) {
@@ -1174,7 +1178,11 @@ try {
         exit 0
     }
     $ownsMutex = $true
-    Save-RunnerLogsToArchive -LogDir $logDir
+
+    $isRootMonitorLaunch = ($Monitor -and [string]::IsNullOrWhiteSpace($JobName) -and [string]::IsNullOrWhiteSpace($SourceFolder))
+    if ($isRootMonitorLaunch) {
+        Save-RunnerLogsToArchive -LogDir $logDir
+    }
     Write-RunnerSessionSeparator -LogDir $logDir
 
     if (-not (Test-Path -LiteralPath $ConfigPath)) {
@@ -1284,6 +1292,9 @@ try {
             $jobLog = New-JobLogFile -RootLogDir $logDir -JobSafeName $safeName
             $jobLogDir = Split-Path -Path $jobLog -Parent
             $jobLogRetentionCount = ConvertTo-PositiveInt -Value (Get-ConfigProperty -Object $job -Name 'logRetentionCount') -FieldName "jobs.$name.logRetentionCount" -DefaultValue $defaultLogRetentionCount
+            if ($jobLogRetentionCount -gt 10) {
+                $jobLogRetentionCount = 10
+            }
             Remove-OldJobLog -JobLogDir $jobLogDir -KeepCount $jobLogRetentionCount
             $logMsg = "Job log file: $jobLog"
             Write-RunnerLog -LogDir $LogDir -Message $logMsg
@@ -1387,6 +1398,9 @@ try {
                 $fallbackBaseName = if ([string]::IsNullOrWhiteSpace($name)) { 'job' } else { $name }
                 $fallbackName = Get-SafeLogName -Name $fallbackBaseName
                 $jobLog = New-JobLogFile -RootLogDir $logDir -JobSafeName $fallbackName
+                $fallbackMsg = "Job log file: $jobLog"
+                Write-RunnerLog -LogDir $LogDir -Message $fallbackMsg
+                Write-ShellMessage -Message $fallbackMsg -IsSilent $IsSilent
             }
 
             Write-JobLog -LogFile $jobLog -Message "ERROR $($_.Exception.Message)"
