@@ -52,6 +52,26 @@ function Write-LauncherErrorLog {
     Add-Content -LiteralPath $errorLog -Value "[$stamp] $Message"
 }
 
+function Remove-OldLauncherLogs {
+    param(
+        [Parameter(Mandatory = $true)][string]$LauncherLogDir,
+        [int]$KeepCount = 10
+    )
+
+    if (-not (Test-Path -LiteralPath $LauncherLogDir)) {
+        return
+    }
+
+    $logFiles = @(Get-ChildItem -LiteralPath $LauncherLogDir -Filter 'detached-start-*.log' -File | Sort-Object LastWriteTime -Descending)
+    if ($logFiles.Count -le $KeepCount) {
+        return
+    }
+
+    foreach ($stale in $logFiles[$KeepCount..($logFiles.Count - 1)]) {
+        Remove-Item -LiteralPath $stale.FullName -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Resolve-ConfigPath {
     param([AllowNull()][string]$Path)
 
@@ -372,15 +392,19 @@ try {
     if ($TaskScheduler) {
         $schedulerLogDir = Join-Path $PSScriptRoot 'logs'
         $launcherTempDir = Join-Path $schedulerLogDir 'launcher'
-        New-Item -ItemType Directory -Force -Path $launcherTempDir | Out-Null
+        $launcherStartDir = Join-Path $launcherTempDir 'start'
+        New-Item -ItemType Directory -Force -Path $launcherStartDir | Out-Null
         $launchStamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
-        $startupStdOutPath = Join-Path $launcherTempDir ("detached-start-$launchStamp-stdout.log")
-        $startupStdErrPath = Join-Path $launcherTempDir ("detached-start-$launchStamp-stderr.log")
+        $startupStdOutPath = Join-Path $launcherStartDir ("detached-start-$launchStamp-stdout.log")
+        $startupStdErrPath = Join-Path $launcherStartDir ("detached-start-$launchStamp-stderr.log")
+        Remove-OldLauncherLogs -LauncherLogDir $launcherStartDir -KeepCount 10
         Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Detached runner launch requested mode=$Mode config=$resolvedConfigPath"
         Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Launcher log folder: $launcherTempDir"
+        Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Launcher start log folder: $launcherStartDir"
         Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Launcher stdout log file: $startupStdOutPath"
         Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Launcher stderr log file: $startupStdErrPath"
         Write-Info "Launcher log folder: $launcherTempDir"
+        Write-Info "Launcher start log folder: $launcherStartDir"
         Write-Info "Launcher stdout log file: $startupStdOutPath"
         Write-Info "Launcher stderr log file: $startupStdErrPath"
         Write-Info 'TaskScheduler mode enabled; starting the job in a detached process.'
