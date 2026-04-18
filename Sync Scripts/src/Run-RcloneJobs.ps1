@@ -54,6 +54,50 @@ function Write-RunnerErrorLog {
     Write-JobLog -LogFile $runnerErrorLog -Message $Message
 }
 
+function Archive-RunnerLogFiles {
+    param([Parameter(Mandatory = $true)][string]$LogDir)
+
+    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+    $archiveRoot = Join-Path $LogDir 'old_logs'
+    $archiveDate = Get-Date -Format 'yyyy-MM-dd'
+    $archiveDir = Join-Path $archiveRoot $archiveDate
+    New-Item -ItemType Directory -Force -Path $archiveDir | Out-Null
+
+    $archiveStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    foreach ($logName in @('runner.log', 'runner-error.log')) {
+        $logPath = Join-Path $LogDir $logName
+        if (Test-Path -LiteralPath $logPath) {
+            $archiveName = "{0}_{1}.log" -f ([System.IO.Path]::GetFileNameWithoutExtension($logName)), $archiveStamp
+            Move-Item -LiteralPath $logPath -Destination (Join-Path $archiveDir $archiveName) -Force
+        }
+    }
+
+    Remove-OldArchivedRunnerLogs -ArchiveRoot $archiveRoot
+}
+
+function Remove-OldArchivedRunnerLogs {
+    param(
+        [Parameter(Mandatory = $true)][string]$ArchiveRoot,
+        [int]$RetentionDays = 7
+    )
+
+    if (-not (Test-Path -LiteralPath $ArchiveRoot)) {
+        return
+    }
+
+    $cutoffDate = (Get-Date).Date.AddDays(-$RetentionDays)
+    foreach ($child in @(Get-ChildItem -LiteralPath $ArchiveRoot -Directory -ErrorAction SilentlyContinue)) {
+        try {
+            $folderDate = [datetime]::ParseExact($child.Name, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+            if ($folderDate -lt $cutoffDate) {
+                Remove-Item -LiteralPath $child.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+        catch {
+        }
+    }
+}
+
 function Write-RunnerSessionSeparator {
     param(
         [Parameter(Mandatory = $true)][string]$LogDir
@@ -1058,6 +1102,7 @@ try {
         exit 0
     }
     $ownsMutex = $true
+    Archive-RunnerLogFiles -LogDir $logDir
     Write-RunnerSessionSeparator -LogDir $logDir
 
     if (-not (Test-Path -LiteralPath $ConfigPath)) {
@@ -1168,6 +1213,9 @@ try {
             $jobLogDir = Split-Path -Path $jobLog -Parent
             $jobLogRetentionCount = ConvertTo-PositiveInt -Value (Get-ConfigProperty -Object $job -Name 'logRetentionCount') -FieldName "jobs.$name.logRetentionCount" -DefaultValue $defaultLogRetentionCount
             Remove-OldJobLog -JobLogDir $jobLogDir -KeepCount $jobLogRetentionCount
+            $logMsg = "Job log file: $jobLog"
+            Write-RunnerLog -LogDir $LogDir -Message $logMsg
+            Write-ShellMessage -Message $logMsg -IsSilent $IsSilent
 
             $source = [string](Get-ConfigProperty -Object $job -Name 'source')
             $dest = [string](Get-ConfigProperty -Object $job -Name 'dest')

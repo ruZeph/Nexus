@@ -28,6 +28,30 @@ function Write-Warn {
     Write-Host "[WARN] $Message" -ForegroundColor Yellow
 }
 
+function Write-LauncherLog {
+    param(
+        [Parameter(Mandatory = $true)][string]$LogDir,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+
+    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+    $runnerLog = Join-Path $LogDir 'runner.log'
+    $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    Add-Content -LiteralPath $runnerLog -Value "[$stamp] $Message"
+}
+
+function Write-LauncherErrorLog {
+    param(
+        [Parameter(Mandatory = $true)][string]$LogDir,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+
+    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+    $errorLog = Join-Path $LogDir 'runner-error.log'
+    $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    Add-Content -LiteralPath $errorLog -Value "[$stamp] $Message"
+}
+
 function Resolve-ConfigPath {
     param([AllowNull()][string]$Path)
 
@@ -205,24 +229,30 @@ function ConvertTo-PowerShellArgument {
 function Start-ScheduledRunnerProcess {
     param(
         [Parameter(Mandatory = $true)][string]$RunnerPath,
-        [Parameter(Mandatory = $true)][hashtable]$RunnerParams
+        [Parameter(Mandatory = $true)][hashtable]$RunnerParams,
+        [Parameter(Mandatory = $true)][string]$StartupStdOutPath,
+        [Parameter(Mandatory = $true)][string]$StartupStdErrPath
     )
 
-    $argumentList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $RunnerPath)
+    $paramTokens = @()
     foreach ($key in $RunnerParams.Keys) {
         $value = $RunnerParams[$key]
         if ($value -is [bool]) {
             if ($value) {
-                $argumentList += "-$key"
+                $paramTokens += "-$key"
             }
             continue
         }
 
-        $argumentList += "-$key"
-        $argumentList += [string]$value
+        $paramTokens += "-$key"
+        $paramTokens += (ConvertTo-PowerShellArgument -Value ([string]$value))
     }
 
-    Start-Process -FilePath 'powershell.exe' -ArgumentList $argumentList | Out-Null
+    $runnerPathToken = ConvertTo-PowerShellArgument -Value $RunnerPath
+    $commandText = "& $runnerPathToken $($paramTokens -join ' ')"
+    $argumentList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $commandText)
+
+    return Start-Process -FilePath 'powershell.exe' -ArgumentList $argumentList -WindowStyle Hidden -PassThru -RedirectStandardOutput $StartupStdOutPath -RedirectStandardError $StartupStdErrPath
 }
 
 function Start-TaskSchedulerWindow {
@@ -237,32 +267,39 @@ function Start-TaskSchedulerWindow {
     )
 
     $startStamp = Get-Date -Format 'yyyy-MM-dd ddd HH:mm:ss'
-    $detailLines = @(
-        "echo [INFO] Mode: $Mode",
-        "echo [INFO] Config: $ResolvedConfigPath"
+    $lines = @(
+        "[STEP] Sync job started at $startStamp",
+        "[INFO] Logs: $LogDir",
+        '[INFO] This window is only a notification. Close it anytime; the job keeps running.',
+        "[INFO] Mode: $Mode",
+        "[INFO] Config: $ResolvedConfigPath"
     )
 
     if (-not [string]::IsNullOrWhiteSpace($JobName)) {
-        $detailLines += "echo [INFO] JobName: $JobName"
+        $lines += "[INFO] JobName: $JobName"
     }
 
     if (-not [string]::IsNullOrWhiteSpace($SourceFolder)) {
-        $detailLines += "echo [INFO] SourceFolder: $SourceFolder"
+        $lines += "[INFO] SourceFolder: $SourceFolder"
     }
 
     if (-not [string]::IsNullOrWhiteSpace($Operation)) {
-        $detailLines += "echo [INFO] Operation: $Operation"
+        $lines += "[INFO] Operation: $Operation"
     }
 
-    $statusLines = @(
-        'title Nexus Sync Job Scheduler',
-        "echo [STEP] Sync job started at $startStamp",
-        "echo [INFO] Logs: $LogDir",
-        'echo [INFO] This window is only a notification. Close it anytime; the job keeps running.'
-    )
+    $encodedLines = @($lines | ForEach-Object { "'" + ($_ -replace "'", "''") + "'" }) -join ', '
+    $notificationScript = @"
+`$Host.UI.RawUI.WindowTitle = 'Nexus Sync Job Scheduler'
+`$items = @($encodedLines)
+foreach (`$item in `$items) {
+    Write-Host `$item -ForegroundColor Cyan
+}
+Write-Host ''
+Write-Host 'Press Enter to close this notification window.' -ForegroundColor Gray
+[void](Read-Host)
+"@
 
-    $commandLine = ($statusLines + $detailLines) -join ' & '
-    Start-Process -FilePath 'cmd.exe' -ArgumentList @('/k', $commandLine) | Out-Null
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-NoLogo', '-ExecutionPolicy', 'Bypass', '-Command', $notificationScript) | Out-Null
 }
 
 try {
@@ -333,9 +370,79 @@ try {
     Write-Info ("Args: {0}" -f ($runnerArgs -join ' '))
 
     if ($TaskScheduler) {
+        $schedulerLogDir = Join-Path $PSScriptRoot 'logs'
+        $launcherTempDir = Join-Path $schedulerLogDir 'launcher'
+        New-Item -ItemType Directory -Force -Path $launcherTempDir | Out-Null
+        $launchStamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+        $startupStdOutPath = Join-Path $launcherTempDir ("detached-start-$launchStamp-stdout.log")
+        $startupStdErrPath = Join-Path $launcherTempDir ("detached-start-$launchStamp-stderr.log")
+        Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Detached runner launch requested mode=$Mode config=$resolvedConfigPath"
         Write-Info 'TaskScheduler mode enabled; starting the job in a detached process.'
-        Start-ScheduledRunnerProcess -RunnerPath $runnerPath -RunnerParams $runnerParams
-        Start-TaskSchedulerWindow -RunnerPath $runnerPath -Mode $Mode -ResolvedConfigPath $resolvedConfigPath -JobName $JobName -SourceFolder $SourceFolder -Operation $Operation -LogDir (Join-Path $PSScriptRoot 'logs')
+        try {
+            $runnerProcess = Start-ScheduledRunnerProcess -RunnerPath $runnerPath -RunnerParams $runnerParams -StartupStdOutPath $startupStdOutPath -StartupStdErrPath $startupStdErrPath
+            $launchPid = if ($null -eq $runnerProcess) { 'unknown' } else { [string]$runnerProcess.Id }
+            Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Detached runner process started pid=$launchPid mode=$Mode"
+
+            if ($null -ne $runnerProcess) {
+                Start-Sleep -Milliseconds 1200
+                $stillRunning = Get-Process -Id $runnerProcess.Id -ErrorAction SilentlyContinue
+                if ($null -eq $stillRunning) {
+                    Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Detached runner process exited immediately pid=$launchPid mode=$Mode"
+                    $exitCode = 'unknown'
+                    try {
+                        $runnerProcess.Refresh()
+                        $exitCode = [string]$runnerProcess.ExitCode
+                    }
+                    catch {
+                    }
+
+                    $stderrSnippet = ''
+                    if (Test-Path -LiteralPath $startupStdErrPath) {
+                        try {
+                            $stderrSnippet = (Get-Content -LiteralPath $startupStdErrPath -Raw -ErrorAction Stop).Trim()
+                        }
+                        catch {
+                        }
+                    }
+
+                    $stdoutSnippet = ''
+                    if (Test-Path -LiteralPath $startupStdOutPath) {
+                        try {
+                            $stdoutSnippet = (Get-Content -LiteralPath $startupStdOutPath -Raw -ErrorAction Stop).Trim()
+                        }
+                        catch {
+                        }
+                    }
+
+                    $detailParts = @(
+                        "[LAUNCHER] Detached runner exited early pid=$launchPid mode=$Mode exitcode=$exitCode"
+                    )
+
+                    if (-not [string]::IsNullOrWhiteSpace($stderrSnippet)) {
+                        $safeStderr = ($stderrSnippet -replace '[\r\n]+', ' ')
+                        $detailParts += "stderr=$safeStderr"
+                    }
+
+                    if (-not [string]::IsNullOrWhiteSpace($stdoutSnippet)) {
+                        $safeStdout = ($stdoutSnippet -replace '[\r\n]+', ' ')
+                        $detailParts += "stdout=$safeStdout"
+                    }
+
+                    Write-LauncherErrorLog -LogDir $schedulerLogDir -Message ($detailParts -join ' | ')
+                }
+                else {
+                    Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Detached scheduler job started successfully pid=$launchPid mode=$Mode"
+                    Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Detached runner process confirmed alive pid=$launchPid mode=$Mode"
+                }
+            }
+
+            Start-TaskSchedulerWindow -RunnerPath $runnerPath -Mode $Mode -ResolvedConfigPath $resolvedConfigPath -JobName $JobName -SourceFolder $SourceFolder -Operation $Operation -LogDir $schedulerLogDir
+        }
+        catch {
+            Write-LauncherLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Detached runner process failed to start mode=$Mode error=$($_.Exception.Message)"
+            Write-LauncherErrorLog -LogDir $schedulerLogDir -Message "[LAUNCHER] Detached runner process failed to start mode=$Mode error=$($_.Exception.Message)"
+            throw
+        }
         exit 0
     }
 
