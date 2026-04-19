@@ -1108,12 +1108,18 @@ function Save-FolderSnapshots {
             $lastSyncStatus = if ($SyncStatus.ContainsKey($folder)) { $SyncStatus[$folder] } else { $null }
             $lastSyncTime = if ($lastSyncStatus -eq 'success') { Get-Date -Format 'yyyy-MM-dd HH:mm:ss' } else { $null }
             
+            # Extract LastChange as string if it exists
+            $lastChangeTime = $null
+            if ($null -ne $FolderState[$folder].LastChange) {
+                $lastChangeTime = $FolderState[$folder].LastChange.ToString('yyyy-MM-dd HH:mm:ss')
+            }
+            
             $state.folders[$folder] = @{
-                snapshot = $FolderState[$folder].Snapshot
-                lastChange = $FolderState[$folder].LastChange
-                lastSyncStatus = $lastSyncStatus  # 'success', 'failed', or $null (never synced)
-                lastSuccessfulSync = $lastSyncTime  # Only set if sync was successful
-                lastSaved = Get-Date
+                snapshot = [string]$FolderState[$folder].Snapshot
+                lastChange = $lastChangeTime
+                lastSyncStatus = $lastSyncStatus
+                lastSuccessfulSync = $lastSyncTime
+                lastSaved = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
             }
         }
         
@@ -1341,7 +1347,7 @@ function Start-FolderMonitoring {
 
     # Mark changed folders to trigger job execution on next idle cycle
     foreach ($folder in $changedFolders) {
-        if ($folderJobMap.ContainsKey($folder)) {
+        if ($folderState.ContainsKey($folder)) {
             $folderState[$folder].PendingChange = $true
             $folderState[$folder].LastChange = Get-Date
         }
