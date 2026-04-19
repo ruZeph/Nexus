@@ -314,7 +314,8 @@ function Show-EventNotification {
         [Parameter(Mandatory = $true)][string]$Title,
         [Parameter(Mandatory = $true)][string]$Message,
         [int]$VisibleSeconds = 12,
-        [switch]$Enabled
+        [switch]$Enabled,
+        [switch]$Popup
     )
 
     if (-not $Enabled) {
@@ -331,6 +332,17 @@ function Show-EventNotification {
     try {
         # Keep notifications parser-safe by avoiding shell command construction.
         Write-Host "[NOTICE][$safeTitle] $safeMessage" -ForegroundColor Cyan
+
+        if ($Popup) {
+            Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+            Add-Type -AssemblyName System.Drawing -ErrorAction SilentlyContinue
+            [void][System.Windows.Forms.MessageBox]::Show(
+                $safeMessage,
+                $safeTitle,
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error
+            )
+        }
     }
     catch {
         # Notification failures should never break sync execution.
@@ -1341,7 +1353,7 @@ function Test-PreflightRequirements {
         # Show UI notification about the failure before exiting
         $notificationTitle = "[Nexus Sync] Configuration Invalid"
         $notificationMsg = "Preflight validation failed. Check logs for details. Common issues: expired rclone token, missing remote paths, inaccessible folders."
-        Show-EventNotification -Title $notificationTitle -Message $notificationMsg -VisibleSeconds 15 -Enabled:$NotifyOnEvents
+        Show-EventNotification -Title $notificationTitle -Message $notificationMsg -VisibleSeconds 15 -Enabled:$NotifyOnEvents -Popup:$NotifyOnEvents
         
         throw $msg
     }
