@@ -1230,7 +1230,7 @@ function Test-PreflightRequirements {
     catch {
         $msg = "CRITICAL: Rclone not found or not executable at '$rcloneExe'"
         Write-RunnerLog -LogDir $LogDir -Message $msg
-        Write-ShellMessage -Message $msg -IsSilent $IsSilent -ErrorLevel 'error'
+        Write-ShellMessage -Message $msg -IsSilent $IsSilent
         throw $msg
     }
 
@@ -1251,7 +1251,7 @@ function Test-PreflightRequirements {
             if (-not (Test-Path -LiteralPath $source)) {
                 $msg = "CRITICAL: Job '$jobName' source folder not found: $source"
                 Write-RunnerLog -LogDir $LogDir -Message $msg
-                Write-ShellMessage -Message $msg -IsSilent $IsSilent -ErrorLevel 'error'
+                Write-ShellMessage -Message $msg -IsSilent $IsSilent
                 $errorMessages += $msg
                 $allValid = $false
                 continue
@@ -1264,7 +1264,7 @@ function Test-PreflightRequirements {
             catch {
                 $msg = "CRITICAL: Job '$jobName' source not accessible: $source - $_"
                 Write-RunnerLog -LogDir $LogDir -Message $msg
-                Write-ShellMessage -Message $msg -IsSilent $IsSilent -ErrorLevel 'error'
+                Write-ShellMessage -Message $msg -IsSilent $IsSilent
                 $errorMessages += $msg
                 $allValid = $false
             }
@@ -1283,7 +1283,7 @@ function Test-PreflightRequirements {
             if ([string]::IsNullOrWhiteSpace($dest)) {
                 $msg = "CRITICAL: Job '$jobName' has empty destination path"
                 Write-RunnerLog -LogDir $LogDir -Message $msg
-                Write-ShellMessage -Message $msg -IsSilent $IsSilent -ErrorLevel 'error'
+                Write-ShellMessage -Message $msg -IsSilent $IsSilent
                 $errorMessages += $msg
                 $allValid = $false
                 continue
@@ -1307,7 +1307,7 @@ function Test-PreflightRequirements {
                         } else {
                             $errorMsg = $testOutput -join "`n"
                             Write-RunnerLog -LogDir $LogDir -Message "CRITICAL: Remote '$remoteName' failed: $errorMsg"
-                            Write-ShellMessage -Message "CRITICAL: Remote '$remoteName' test failed. Error: $errorMsg" -IsSilent $IsSilent -ErrorLevel 'error'
+                            Write-ShellMessage -Message "CRITICAL: Remote '$remoteName' test failed. Error: $errorMsg" -IsSilent $IsSilent
                             $errorMessages += "Remote '$remoteName' failed: $errorMsg"
                             $remoteNames[$remoteName] = $false
                             $allValid = $false
@@ -1316,7 +1316,7 @@ function Test-PreflightRequirements {
                     catch {
                         $msg = "CRITICAL: Failed to test remote '$remoteName': $_"
                         Write-RunnerLog -LogDir $LogDir -Message $msg
-                        Write-ShellMessage -Message $msg -IsSilent $IsSilent -ErrorLevel 'error'
+                        Write-ShellMessage -Message $msg -IsSilent $IsSilent
                         $errorMessages += $msg
                         $remoteNames[$remoteName] = $false
                         $allValid = $false
@@ -1335,7 +1335,7 @@ function Test-PreflightRequirements {
         $summary = $errorMessages -join "; "
         $msg = "CRITICAL: Preflight validation failed. Cannot proceed with jobs: $summary"
         Write-RunnerLog -LogDir $LogDir -Message $msg
-        Write-ShellMessage -Message $msg -IsSilent $IsSilent -ErrorLevel 'error'
+        Write-ShellMessage -Message $msg -IsSilent $IsSilent
         throw $msg
     }
 
