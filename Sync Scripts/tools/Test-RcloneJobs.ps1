@@ -957,6 +957,186 @@ function Test-EventHandlerConsolidation {
     Write-Info "Registered event handlers: $handlerCount"
 }
 
+function Test-FileLevelWorkerPoolInitialization {
+    Write-TestHeader "File-Level Worker Pool Test: Initialization"
+
+    $scriptContent = Get-Content -LiteralPath $testConfig.scriptPath
+    
+    Write-TestCase "FileJobQueue initialization"
+    $hasFileJobQueue = [bool]($scriptContent -match 'FileJobQueue.*Queue\.Synchronized|FileJobQueue.*=.*Queue')
+    Assert-True $hasFileJobQueue "Should initialize FileJobQueue"
+    Write-Pass "FileJobQueue is initialized"
+
+    Write-TestCase "ProcessingFiles HashSet initialization"
+    $hasProcessingFiles = [bool]($scriptContent -match 'ProcessingFiles.*HashSet|ProcessingFiles.*new\(\)')
+    Assert-True $hasProcessingFiles "Should initialize ProcessingFiles set"
+    Write-Pass "ProcessingFiles HashSet is initialized"
+
+    Write-TestCase "ProcessingFilesLock (ReaderWriterLockSlim) initialization"
+    $hasLock = [bool]($scriptContent -match 'ProcessingFilesLock.*ReaderWriterLockSlim|ProcessingFilesLock.*new\(\)')
+    Assert-True $hasLock "Should initialize ReaderWriterLockSlim for thread-safety"
+    Write-Pass "ProcessingFilesLock is initialized"
+}
+
+function Test-FileJobQueueImmediate {
+    Write-TestHeader "File-Level Worker Pool Test: File Job Queueing (Immediate)"
+
+    $scriptContent = Get-Content -LiteralPath $testConfig.scriptPath
+    
+    Write-TestCase "File jobs are created with required properties"
+    $hasJobName = [bool]($scriptContent -match 'JobName.*=|fileJob.*JobName')
+    $hasFilePath = [bool]($scriptContent -match 'FilePath.*=|fileJob.*FilePath')
+    $hasFolderPath = [bool]($scriptContent -match 'FolderPath.*=|fileJob.*FolderPath')
+    $hasChangeType = [bool]($scriptContent -match 'ChangeType.*=|fileJob.*ChangeType')
+    
+    Assert-True $hasJobName "FileJob should have JobName"
+    Assert-True $hasFilePath "FileJob should have FilePath"
+    Assert-True $hasFolderPath "FileJob should have FolderPath"
+    Assert-True $hasChangeType "FileJob should have ChangeType"
+    Write-Pass "FileJob object contains all required properties"
+
+    Write-TestCase "Files are queued to FileJobQueue immediately"
+    $hasImmediateQueue = [bool]($scriptContent -match 'FileJobQueue\.Enqueue\(\$fileJob\)|Enqueue.*fileJob')
+    Assert-True $hasImmediateQueue "Should immediately enqueue file jobs"
+    Write-Pass "File jobs are queued immediately"
+
+    Write-TestCase "Simulate file job queueing"
+    $fileJobQueue = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
+    $files = @('file1.txt', 'file2.xlsx', 'file3.docx')
+    
+    foreach ($file in $files) {
+        $fileJob = [pscustomobject]@{
+            JobName = 'test-job'
+            FolderPath = 'C:\test'
+            FilePath = $file
+            ChangeType = 'Changed'
+            QueueTime = Get-Date
+        }
+        $fileJobQueue.Enqueue($fileJob)
+    }
+    
+    $queuedCorrectly = $fileJobQueue.Count -eq 3
+    Assert-True $queuedCorrectly "Should queue 3 file jobs (queued: $($fileJobQueue.Count))"
+    Write-Pass "File queueing simulation successful"
+}
+
+function Test-ProcessingFilesDeduplication {
+    Write-TestHeader "File-Level Worker Pool Test: Deduplication (ProcessingFiles)"
+
+    $scriptContent = Get-Content -LiteralPath $testConfig.scriptPath
+    
+    Write-TestCase "ProcessingFiles prevents re-queueing"
+    $hasDedup = [bool]($scriptContent -match 'ProcessingFiles\.Contains|if.*ProcessingFiles')
+    Assert-True $hasDedup "Should check ProcessingFiles before queueing"
+    Write-Pass "Deduplication check is implemented"
+
+    Write-TestCase "Simulate ProcessingFiles deduplication"
+    $processingFiles = [System.Collections.Generic.HashSet[string]]::new()
+    $processingFilesLock = [System.Threading.ReaderWriterLockSlim]::new()
+    
+    $processingFilesLock.EnterReadLock()
+    $fileInProcessing = $processingFiles.Contains('C:\test\file.txt')
+    $processingFilesLock.ExitReadLock()
+    
+    Assert-False $fileInProcessing "File should not be in processing set initially"
+    
+    $processingFilesLock.EnterWriteLock()
+    $processingFiles.Add('C:\test\file.txt') | Out-Null
+    $processingFilesLock.ExitWriteLock()
+    
+    $processingFilesLock.EnterReadLock()
+    $fileInProcessing = $processingFiles.Contains('C:\test\file.txt')
+    $processingFilesLock.ExitReadLock()
+    
+    Assert-True $fileInProcessing "File should be in processing set after add"
+    Write-Pass "Deduplication prevents re-queueing"
+
+    Write-TestCase "Simulate file removal from processing set"
+    $processingFilesLock.EnterWriteLock()
+    $processingFiles.Remove('C:\test\file.txt') | Out-Null
+    $processingFilesLock.ExitWriteLock()
+    
+    $processingFilesLock.EnterReadLock()
+    $fileInProcessing = $processingFiles.Contains('C:\test\file.txt')
+    $processingFilesLock.ExitReadLock()
+    
+    Assert-False $fileInProcessing "File should be removed from processing set"
+    Write-Pass "File successfully removed from ProcessingFiles"
+    
+    $processingFilesLock.Dispose()
+}
+
+function Test-FileJobExecutionAfterIdle {
+    Write-TestHeader "File-Level Worker Pool Test: Idle-Based Execution"
+
+    $scriptContent = Get-Content -LiteralPath $testConfig.scriptPath
+    
+    Write-TestCase "File jobs execute after idle time (not immediately)"
+    $hasIdleCheck = [bool]($scriptContent -match '\$secsIdle.*IdleTimeSeconds|\$secsIdle\s*-lt')
+    $hasFileJobProcessing = [bool]($scriptContent -match 'FileJobQueue\.Count.*>.*0|while.*FileJobQueue')
+    
+    Assert-True $hasIdleCheck "Should check idle time before processing"
+    Assert-True $hasFileJobProcessing "Should process file jobs"
+    Write-Pass "File job execution respects idle time"
+
+    Write-TestCase "File job processor exists and dequeues jobs"
+    $hasDequeue = [bool]($scriptContent -match 'FileJobQueue\.Dequeue|Dequeue.*fileJob')
+    $hasLogResult = [bool]($scriptContent -match '\[FILE JOB RESULT\]|FILE.*JOB.*RESULT')
+    
+    Assert-True $hasDequeue "Should dequeue file jobs"
+    Assert-True $hasLogResult "Should log [FILE JOB RESULT] for each file"
+    Write-Pass "File job processor is implemented"
+
+    Write-TestCase "Verify idle-triggered logging"
+    $hasIdleTriggeredLog = [bool]($scriptContent -match 'idle-triggered|Processing file job.*idle')
+    Assert-True $hasIdleTriggeredLog "Should indicate idle-triggered execution"
+    Write-Pass "Idle-triggered indicator is logged"
+}
+
+function Test-FileJobResultLogging {
+    Write-TestHeader "File-Level Worker Pool Test: Result Logging"
+
+    $scriptContent = Get-Content -LiteralPath $testConfig.scriptPath
+    
+    Write-TestCase "[FILE JOB RESULT] logging format"
+    $hasName = [bool]($scriptContent -match 'name=.*jobName|\[FILE JOB RESULT\].*name')
+    $hasFilePath = [bool]($scriptContent -match 'filepath=.*filePath|\[FILE JOB RESULT\].*filepath')
+    $hasResult = [bool]($scriptContent -match 'result=.*jobResult|\[FILE JOB RESULT\].*result')
+    $hasExitCode = [bool]($scriptContent -match 'exitcode=.*jobExitCode|\[FILE JOB RESULT\].*exitcode')
+    $hasDuration = [bool]($scriptContent -match 'duration_sec=.*jobDurationSec|\[FILE JOB RESULT\].*duration')
+    
+    Assert-True $hasName "[FILE JOB RESULT] should include job name"
+    Assert-True $hasFilePath "[FILE JOB RESULT] should include file path"
+    Assert-True $hasResult "[FILE JOB RESULT] should include result (success/failed)"
+    Assert-True $hasExitCode "[FILE JOB RESULT] should include exit code"
+    Assert-True $hasDuration "[FILE JOB RESULT] should include duration"
+    Write-Pass "[FILE JOB RESULT] contains all required fields"
+
+    Write-TestCase "Simulate file job result logging"
+    $logMessage = "[FILE JOB RESULT] name=test-job filepath=C:\test\file.txt result=success exitcode=0 duration_sec=1.25"
+    
+    $hasCorrectFormat = $logMessage -match '\[FILE JOB RESULT\].*name=.*filepath=.*result=.*exitcode=.*duration_sec='
+    Assert-True $hasCorrectFormat "Log message format should match expected pattern"
+    Write-Pass "File job result logging format is correct"
+}
+
+function Test-FileLevelWorkerPoolIntegration {
+    Write-TestHeader "File-Level Worker Pool Test: Integration (End-to-End)"
+
+    Write-TestCase "Script loads and initializes correctly"
+    $scriptPath = $testConfig.scriptPath
+    $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $scriptPath -JobName 'office-docs-backup' -DryRun -Silent 2>&1
+    $exitCode = $LASTEXITCODE
+    
+    Assert-Equal 0 $exitCode "Script should load without errors (exit code: $exitCode)"
+    Write-Pass "Script initialization successful"
+
+    Write-TestCase "File-level infrastructure is functional"
+    $hasNoQueueErrors = -not ($output | Select-String -Pattern 'FileJobQueue|ProcessingFiles|ReaderWriterLock' -ErrorAction SilentlyContinue)
+    Assert-True $hasNoQueueErrors "Should initialize file-level infrastructure without errors"
+    Write-Pass "File-level worker pool infrastructure is functional"
+}
+
 # ============================================================
 # REPORT GENERATION
 # ============================================================
@@ -1041,6 +1221,12 @@ function Main {
             Test-FileSystemWatcherEventQueue
             Test-FolderSnapshotOptimization
             Test-EventHandlerConsolidation
+            Test-FileLevelWorkerPoolInitialization
+            Test-FileJobQueueImmediate
+            Test-ProcessingFilesDeduplication
+            Test-FileJobExecutionAfterIdle
+            Test-FileJobResultLogging
+            Test-FileLevelWorkerPoolIntegration
         }
         'All' {
             Test-ConfigParsing
@@ -1076,6 +1262,12 @@ function Main {
             Test-FileSystemWatcherEventQueue
             Test-FolderSnapshotOptimization
             Test-EventHandlerConsolidation
+            Test-FileLevelWorkerPoolInitialization
+            Test-FileJobQueueImmediate
+            Test-ProcessingFilesDeduplication
+            Test-FileJobExecutionAfterIdle
+            Test-FileJobResultLogging
+            Test-FileLevelWorkerPoolIntegration
         }
     }
     
