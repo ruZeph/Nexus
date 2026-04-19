@@ -1,24 +1,52 @@
+> Substitute example paths, remotes, and intervals with your own values.
+
 # Rclone Backup Job Runner
 
 A PowerShell-based rclone backup runner with two execution modes: **scheduled/manual run** and **real-time monitor mode** triggered by folder changes.
 
-**Features:** Internet check before sync · Global mutex to prevent overlapping runs · Rate-limit detection with backoff · Config-driven jobs with per-job intervals · Structured logging for operations, errors, resources, and outcomes · Snapshot-based change detection · Task Scheduler integration
+## Features
+
+- **Internet Connectivity Check** — Validates connection before sync operations
+- **Global Mutex Lock** — Prevents overlapping runs from multiple instances
+- **Rate Limit Detection** — Automatic backoff when providers throttle requests
+- **Config-Driven Jobs** — Interval-based scheduling without hardcoded values
+- **Structured Logging** — Separate operational, error, resource, and outcome logs
+- **Snapshot-Based Detection** — Reliable change detection across restarts
+- **Task Scheduler Integration** — Native Windows scheduling support
 
 ---
 
 ## Table of Contents
 
-- [Quick Start](#quick-start)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Monitor Mode](#monitor-mode)
-- [Snapshot System](#snapshot-system)
-- [Execution Flow](#execution-flow)
-- [Logging](#logging)
-- [Task Scheduler Setup](#task-scheduler-setup)
-- [CLI Reference](#cli-reference)
-- [Testing](#testing)
-- [Troubleshooting](#troubleshooting)
+- [Rclone Backup Job Runner](#rclone-backup-job-runner)
+  - [Table of Contents](#table-of-contents)
+  - [Quick Start](#quick-start)
+    - [Option A: One-Command Setup](#option-a-one-command-setup)
+    - [Option B: Manual Setup](#option-b-manual-setup)
+    - [First Run](#first-run)
+  - [Installation](#installation)
+    - [Project Layout](#project-layout)
+  - [Configuration](#configuration)
+    - [Configuration Helper](#configuration-helper)
+    - [Configuration Schema](#configuration-schema)
+      - [Minimal Example](#minimal-example)
+      - [Settings](#settings)
+      - [Profiles](#profiles)
+      - [Jobs](#jobs)
+      - [Full Example](#full-example)
+  - [Monitor Mode](#monitor-mode)
+  - [Snapshot System](#snapshot-system)
+    - [Fresh Instance Behavior](#fresh-instance-behavior)
+    - [Scenarios](#scenarios)
+    - [Snapshot Update Strategy](#snapshot-update-strategy)
+  - [Execution Flow](#execution-flow)
+  - [Logging](#logging)
+  - [Task Scheduler Setup](#task-scheduler-setup)
+  - [CLI Reference](#cli-reference)
+    - [Exit Codes](#exit-codes)
+  - [Testing](#testing)
+  - [Troubleshooting](#troubleshooting)
+  - [Implementation Notes](#implementation-notes)
 
 ---
 
@@ -30,13 +58,7 @@ A PowerShell-based rclone backup runner with two execution modes: **scheduled/ma
 irm https://raw.githubusercontent.com/ruZeph/Nexus/main/Sync%20Scripts/quick-start.ps1 | iex
 ```
 
-The setup script will:
-
-- Validate PowerShell version and rclone installation
-- Download all runner files with retries
-- Generate a blank `backup-jobs.json` (won't overwrite existing)
-- Verify your rclone remote exists
-- Launch the interactive job configuration helper
+The setup script will validate PowerShell version and rclone installation, download all runner files with retries, generate a blank `backup-jobs.json` (won't overwrite existing), verify your rclone remote, and launch the interactive job configuration helper.
 
 ### Option B: Manual Setup
 
@@ -83,8 +105,6 @@ The setup script will:
     └── folder-snapshots.json
 ```
 
-**Key directories:**
-
 - `logs/` — Operational logs (tracked in git)
 - `.state/` — Runtime state files (not tracked in git)
 
@@ -96,15 +116,11 @@ Jobs are defined in `backup-jobs.json`. Use the helper tool or edit manually.
 
 ### Configuration Helper
 
-**Interactive (recommended):**
-
 ```powershell
+# Interactive (recommended)
 .\tools\New-RcloneJobConfig.ps1 -ConfigPath .\backup-jobs.json -Interactive
-```
 
-**Non-interactive:**
-
-```powershell
+# Non-interactive
 .\tools\New-RcloneJobConfig.ps1 `
   -ConfigPath .\backup-jobs.json `
   -JobName    documents-backup `
@@ -186,7 +202,7 @@ Named presets for reusable rclone argument sets:
 | `interval` | integer | No | `jobIntervalSeconds` | Seconds before next run |
 | `extraArgs` | string[] | No | — | Extra rclone arguments |
 
-#### Full Configuration Example
+#### Full Example
 
 ```json
 {
@@ -230,45 +246,27 @@ Named presets for reusable rclone argument sets:
 
 ## Monitor Mode
 
-Monitor mode keeps a persistent process running and syncs when files actually change — no polling interval needed.
+Monitor mode keeps a persistent process running and syncs when files actually change.
 
 **How it works:**
 
 1. `FileSystemWatcher` streams change events from each job's source folder
-2. Changes are debounced by `-IdleTimeSeconds` (waits for this duration of inactivity)
-3. Once idle time elapses, mapped jobs are deduplicated and executed
-4. `backup-jobs.json` is reloaded periodically (no restart required for config changes)
+2. Changes are debounced by `-IdleTimeSeconds` (waits for this duration of inactivity before triggering)
+3. Mapped jobs are deduplicated and executed
+4. `backup-jobs.json` is reloaded periodically — no restart required for config changes
 5. A polling snapshot fallback catches any events the watcher misses
-
-### Starting Monitor
 
 ```powershell
 .\Launch-Runner.ps1 -Mode monitor -IdleTimeSeconds 10
 ```
 
-### Monitor Features
-
-- **Real-time responsiveness:** Detects file changes immediately
-- **Change deduplication:** Multiple changes map to single sync job
-- **Graceful config updates:** Reload config without restart
-- **Snapshot-based fallback:** Polling detects missed events
-- **Safe stops:** Stop after current transfer finishes
-
 ---
 
 ## Snapshot System
 
-The snapshot system ensures reliable change detection across restarts by tracking folder state and sync status.
+Snapshots track folder state and sync status across restarts to ensure reliable change detection.
 
-### How Snapshots Work
-
-**Storage:**
-
-- Location: `.state/folder-snapshots.json` (not version-controlled)
-- Created: Automatically on first run
-- Updated: After successful job · 15-minute fallback · On graceful shutdown
-
-**Contents:**
+**Storage:** `.state/folder-snapshots.json` (not version-controlled). Created automatically on first run; updated after successful jobs, every 15 minutes idle, and on graceful shutdown.
 
 ```json
 {
@@ -286,59 +284,34 @@ The snapshot system ensures reliable change detection across restarts by trackin
 
 ### Fresh Instance Behavior
 
-On monitor startup, the script **always** compares current state vs saved snapshots.
+On monitor startup, current state is compared against saved snapshots. Sync is triggered if any of these conditions apply:
 
-**Triggers sync if ANY of these conditions:**
+1. No snapshot exists (first run)
+2. Last sync status was not `success`
+3. Folder contents have changed (hash mismatch)
 
-1. **No snapshot exists** (first sync)
-2. **Last sync was not successful** (failed or incomplete)
-3. **Folder contents changed** (snapshot mismatch)
+### Scenarios
 
-This ensures both remote and local are always in sync after restart.
-
-### Three Scenarios
-
-#### Scenario 1: Normal Operation
+**Normal operation**
 
 ```text
-Session 1:
-├─ Files sync successfully
-├─ Snapshot saved: status='success'
-└─ Laptop shuts down
-
-Session 2 (Restart):
-├─ Load snapshot: status='success', files match
-└─ Decision: SKIP SYNC (already up-to-date)
+Session 1: Files sync → snapshot saved (status=success) → shutdown
+Session 2: Snapshot matches → SKIP SYNC
 ```
 
-#### Scenario 2: Failed Sync Detection
+**Failed sync**
 
 ```text
-Session 1:
-├─ Job attempts sync
-├─ FAILS (network error, timeout)
-├─ Snapshot status marked: 'failed'
-└─ Laptop shuts down
-
-Session 2 (Restart):
-├─ Load snapshot: status='failed'
-└─ Decision: FORCE SYNC (retry)
+Session 1: Sync fails → snapshot saved (status=failed) → shutdown
+Session 2: status=failed → FORCE SYNC
 ```
 
-#### Scenario 3: External Changes
+**External changes**
 
 ```text
-Session 1:
-├─ Snapshot saved: hash="ABC123"
-└─ Laptop shuts down
-
-External:
-└─ Files modified
-
-Session 2 (Restart):
-├─ Load snapshot: hash="ABC123"
-├─ Current hash: "XYZ789" (mismatch!)
-└─ Decision: FORCE SYNC
+Session 1: Snapshot saved (hash=ABC123) → shutdown
+Files modified externally
+Session 2: Current hash=XYZ789 ≠ ABC123 → FORCE SYNC
 ```
 
 ### Snapshot Update Strategy
@@ -355,8 +328,6 @@ Session 2 (Restart):
 
 ## Execution Flow
 
-Each run cycle follows this order:
-
 1. Check internet connectivity
 2. Acquire global mutex lock (exit if another instance is active)
 3. Load and validate `backup-jobs.json`
@@ -369,15 +340,11 @@ Each run cycle follows this order:
 
 ## Logging
 
-Log files are written to the `logs/` directory.
-
 | File | Purpose |
 |------|---------|
 | `runner.log` | Lifecycle events, monitor activity, resource telemetry, job results |
 | `runner-error.log` | Runtime errors and warnings |
 | `<job-name>/<timestamp>.log` | Raw rclone output per job run |
-
-### Log Queries
 
 ```powershell
 # Tail recent activity
@@ -392,9 +359,7 @@ Select-String -Path logs/runner.log -Pattern "\[RESOURCE\]"
 
 ## Task Scheduler Setup
 
-Use Task Scheduler to start the monitor process. Do not create one task per job — add jobs to `backup-jobs.json` instead.
-
-### One-Time Task Creation
+Create one task pointing to the monitor. Add new backup targets to `backup-jobs.json` — do not create separate tasks per job.
 
 ```powershell
 schtasks /create `
@@ -407,29 +372,18 @@ schtasks /create `
   /tr 'powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Launch-Runner.ps1" -Mode monitor -TaskScheduler -Silent -IdleTimeSeconds 60'
 ```
 
-**What this does:**
-
-- Creates logon-triggered task
-- Launches monitor in hidden mode
-- Passes `-TaskScheduler` for scheduler-specific behavior
-- Uses `-Silent` for minimal console output
-- Waits 60 seconds of inactivity before syncing
-
-### Verify Task
+Flags: logon-triggered · hidden window · `-TaskScheduler` for scheduler-specific behavior · `-Silent` for minimal console output · 60-second idle debounce.
 
 ```powershell
+# Verify
 schtasks /query /tn "Rclone Monitor Runner" /v /fo list
 ```
 
-### Add New Jobs
-
-Edit `backup-jobs.json` and add to `jobs[]`. The monitor will pick up all enabled jobs without restarting the Task Scheduler task.
+To add new jobs, edit `backup-jobs.json`. The running monitor picks them up without a restart.
 
 ---
 
 ## CLI Reference
-
-All commands use `Launch-Runner.ps1` as the entry point.
 
 | Task | Command |
 |------|---------|
@@ -460,12 +414,7 @@ All commands use `Launch-Runner.ps1` as the entry point.
 .\tools\Test-RcloneJobs.ps1 -Quick
 ```
 
-**Test Coverage:**
-
-- Unit tests for config parsing and validation
-- Integration tests for dry-run and logging
-- Robustness tests for mutex safety and change detection
-- File-level worker pool tests
+Coverage: config parsing/validation · dry-run and logging · mutex safety · change detection · file-level worker pool.
 
 ---
 
@@ -474,38 +423,20 @@ All commands use `Launch-Runner.ps1` as the entry point.
 | Issue | Check | Fix |
 |-------|-------|-----|
 | Internet check fails | ICMP to 8.8.8.8 blocked? | Allow ping in firewall |
-| Monitor not triggering | Source paths exist? `-Mode monitor` set? | Confirm paths in logs/runner.log |
-| Frequent rate limits | `-transfers`/`-checkers` too high? | Lower values in profile |
-| No job result in log | Log files in `logs/<job-name>/`? | Check file creation and rclone output |
+| Monitor not triggering | Source paths exist? `-Mode monitor` set? | Confirm paths in `logs/runner.log` |
+| Frequent rate limits | `--transfers`/`--checkers` too high? | Lower values in profile |
+| No job result in log | `logs/<job-name>/` directory present? | Check file creation and rclone output |
 | "Another instance active" | Scheduler firing too often? | Increase trigger interval |
-| Snapshots not saving | .state directory writable? | Check file permissions |
+| Snapshots not saving | `.state/` directory writable? | Check file permissions |
 
 ---
 
-## Key Implementation Details
+## Implementation Notes
 
-### Defensive Programming
+**Correctness:** Global named mutex prevents concurrent runs · atomic HashSet deduplication · snapshot comparison on every restart · graceful handling of forceful Task Scheduler termination.
 
-- **Directory creation:** Auto-creates `logs/` and `.state/` with error handling
-- **Mutex safety:** Global named mutex prevents duplicate runs
-- **Atomic operations:** Check-and-add deduplication in HashSet
-- **Task Scheduler resilience:** Handles forceful process termination gracefully
-- **Change detection:** Snapshot comparison on every restart
+**Performance:** Batched log writes · configurable idle debounce · file-level worker deduplication · rate-limit backoff.
 
-### Performance
-
-- **Batched logging:** Groups log writes for I/O efficiency
-- **Smart intervals:** Configurable idle time for change debouncing
-- **File-level workers:** Deduplicates changes to prevent duplicate syncs
-- **Rate limiting:** Detects and backs off on provider limits
-
-### Security
-
-- **User-scoped mutex:** Prevents cross-user interference
-- **Resolved paths:** Uses absolute paths for consistency
-- **Config validation:** Enforces job names and remote format
-- **Error isolation:** One job failure doesn't crash others
+**Security:** User-scoped mutex · absolute path resolution · config validation enforces job names and remote format · per-job error isolation.
 
 ---
-
-> Substitute example paths, remotes, and intervals with your own configuration.
