@@ -905,16 +905,27 @@ function Start-FolderMonitoring {
     foreach ($folder in $watchedFolders) {
         $snapshot = Get-FolderSnapshotSignature -FolderPath $folder
         if ($snapshot -notin @('ERROR_ACCESS', 'ERROR_READ')) {
+            # Successful snapshot - use it as baseline
             $folderState[$folder] = [pscustomobject]@{
                 Snapshot = $snapshot
                 LastChange = $null
                 PendingChange = $false
                 ErrorCount = 0
+                InitialAccessFailed = $false
             }
-            Add-FolderWatcher -FolderPath $folder -Watchers $watchers -WatcherSync $watcherSync -LogDir $LogDir -IsSilent $IsSilent
         } else {
-            Write-RunnerLog -LogDir $LogDir -Message "Warning: Cannot access folder initially: $folder"
+            # Access failed initially - use empty baseline for change detection once accessible
+            Write-RunnerLog -LogDir $LogDir -Message "Info: Folder not immediately accessible, monitoring for changes once available: $folder"
+            $folderState[$folder] = [pscustomobject]@{
+                Snapshot = ''  # Empty baseline allows first change detection
+                LastChange = $null
+                PendingChange = $false
+                ErrorCount = 0
+                InitialAccessFailed = $true
+            }
         }
+        # Always add the watcher, regardless of initial access success
+        Add-FolderWatcher -FolderPath $folder -Watchers $watchers -WatcherSync $watcherSync -LogDir $LogDir -IsSilent $IsSilent
     }
 
     $msg = "Folder monitoring started. Watching $($watchedFolders.Count) folder(s) with ${IdleTimeSeconds}s idle time."
