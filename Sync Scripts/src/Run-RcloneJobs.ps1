@@ -741,28 +741,78 @@ function Add-FolderWatcher {
         }
 
         # Consolidated event handler that uses queue instead of overwriting
+        # IMPORTANT: Filter out temp/lock/swap files at source to prevent queue pollution
         $eventHandler = {
             $sync = $event.MessageData.WatcherSync
             $folder = [string]$event.MessageData.FolderPath
             $fileEvent = $event.SourceEventArgs
             
-            if ($null -ne $sync -and -not [string]::IsNullOrWhiteSpace($folder)) {
-                $eventRecord = [pscustomobject]@{
-                    Time = Get-Date
-                    ChangeType = [string]$fileEvent.ChangeType
-                    FullPath = [string]$fileEvent.FullPath
-                    OldFullPath = [string]$fileEvent.OldFullPath
-                }
-                
-                # Add to queue instead of overwriting
-                if (-not $sync.EventQueue.ContainsKey($folder)) {
-                    $sync.EventQueue[$folder] = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
-                }
-                $sync.EventQueue[$folder].Enqueue($eventRecord)
-                
-                # Mark folder as having pending changes
-                $sync.ChangedFolders[$folder] = $true
+            if ($null -eq $sync -or [string]::IsNullOrWhiteSpace($folder)) {
+                return
             }
+            
+            $fullPath = [string]$fileEvent.FullPath
+            
+            # ==============================================================
+            # FILTER: Skip temp, lock, swap, and system files immediately
+            # ==============================================================
+            # These patterns should be ignored (not queued, not logged):
+            $tempPatterns = @(
+                '~$*'                    # Word temp files
+                '*.tmp'                  # Temporary files
+                '*.temp'                 # Temporary files
+                '*.bak'                  # Backup files
+                '*.swp'                  # Vim swap
+                '*.swo'                  # Vim swap
+                '*.lock'                 # Lock files
+                '*.lck'                  # Lock files
+                'Thumbs.db'              # Windows thumbnail cache
+                '.DS_Store'              # macOS metadata
+                '*.crdownload'           # Chrome download
+                '*.part'                 # Partial download
+                '*.tmp.*'                # Various temp variants
+                '._*'                    # macOS resource forks
+                'desktop.ini'            # Windows folder config
+            )
+            
+            $fileName = [System.IO.Path]::GetFileName($fullPath)
+            $shouldSkip = $false
+            
+            foreach ($pattern in $tempPatterns) {
+                if ($fileName -like $pattern) {
+                    $shouldSkip = $true
+                    break
+                }
+            }
+            
+            # Also skip files starting with a dot (hidden files like .git, .lock)
+            if ($fileName.StartsWith('.')) {
+                $shouldSkip = $true
+            }
+            
+            if ($shouldSkip) {
+                # Silently skip - don't queue, don't log (prevent noise)
+                return
+            }
+            
+            # ==============================================================
+            # ONLY ROOT FILES: Queue this change
+            # ==============================================================
+            $eventRecord = [pscustomobject]@{
+                Time = Get-Date
+                ChangeType = [string]$fileEvent.ChangeType
+                FullPath = $fullPath
+                OldFullPath = [string]$fileEvent.OldFullPath
+            }
+            
+            # Add to queue (only root files reach here)
+            if (-not $sync.EventQueue.ContainsKey($folder)) {
+                $sync.EventQueue[$folder] = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
+            }
+            $sync.EventQueue[$folder].Enqueue($eventRecord)
+            
+            # Mark folder as having pending changes
+            $sync.ChangedFolders[$folder] = $true
         }
 
         $subs = @(
