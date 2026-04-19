@@ -1198,10 +1198,44 @@ function Start-FolderMonitoring {
                     }
                 }
 
+                $currentSnapshot = Get-FolderSnapshotSignature -FolderPath $folder
+                
+                if ($currentSnapshot -in @('ERROR_ACCESS', 'ERROR_READ')) {
+                    $state.ErrorCount++
+                    if ($state.ErrorCount -ge 3) {
+                        Write-RunnerLog -LogDir $LogDir -Message "Warning: Persistent access error: $folder"
+                    }
+                    continue
+                }
+                
+                if ($currentSnapshot -ne $state.Snapshot) {
+                    $state.Snapshot = $currentSnapshot
+                    if ($null -eq $watcherEvent) {
+                        $state.LastChange = $now
+                        $state.PendingChange = $true
+
+                        $msg = "Change detected in folder: $folder [snapshot-diff]"
+                        Write-RunnerLog -LogDir $LogDir -Message $msg
+                        Write-ShellMessage -Message $msg -IsSilent $IsSilent
+                    }
+                }
+
+                if (-not $state.PendingChange) {
+                    continue
+                }
+
+                $secsIdle = ($now - $state.LastChange).TotalSeconds
+                if ($secsIdle -lt $IdleTimeSeconds) {
+                    continue
+                }
+
                 # ==============================================================
-                # PROCESS FILE-LEVEL JOBS IMMEDIATELY (no idle waiting)
+                # IDLE TIME REACHED: Process queued file jobs NOW
                 # ==============================================================
-                # Pull file jobs from queue and execute workers
+                # Files were queued immediately when detected, but jobs execute here
+                # This keeps responsiveness (files queued fast) but prevents constant triggering
+                
+                $jobsProcessed = 0
                 while ($watcherSync.FileJobQueue.Count -gt 0) {
                     $fileJob = $watcherSync.FileJobQueue.Dequeue()
                     if ($null -eq $fileJob) { break }
@@ -1224,7 +1258,8 @@ function Start-FolderMonitoring {
                         continue
                     }
                     
-                    Write-RunnerLog -LogDir $LogDir -Message "Processing file job: $filePath for $jobName"
+                    Write-RunnerLog -LogDir $LogDir -Message "Processing file job: $filePath for $jobName (idle-triggered)"
+                    $jobsProcessed++
                     
                     # Execute job
                     $jobStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -1267,36 +1302,10 @@ function Start-FolderMonitoring {
                         }
                     }
                 }
-
-                $currentSnapshot = Get-FolderSnapshotSignature -FolderPath $folder
                 
-                if ($currentSnapshot -in @('ERROR_ACCESS', 'ERROR_READ')) {
-                    $state.ErrorCount++
-                    if ($state.ErrorCount -ge 3) {
-                        Write-RunnerLog -LogDir $LogDir -Message "Warning: Persistent access error: $folder"
-                    }
-                    continue
-                }
-                
-                if ($currentSnapshot -ne $state.Snapshot) {
-                    $state.Snapshot = $currentSnapshot
-                    if ($null -eq $watcherEvent) {
-                        $state.LastChange = $now
-                        $state.PendingChange = $true
-
-                        $msg = "Change detected in folder: $folder [snapshot-diff]"
-                        Write-RunnerLog -LogDir $LogDir -Message $msg
-                        Write-ShellMessage -Message $msg -IsSilent $IsSilent
-                    }
-                }
-
-                if (-not $state.PendingChange) {
-                    continue
-                }
-
-                $secsIdle = ($now - $state.LastChange).TotalSeconds
-                if ($secsIdle -lt $IdleTimeSeconds) {
-                    continue
+                # Log if file jobs were processed
+                if ($jobsProcessed -gt 0) {
+                    Write-RunnerLog -LogDir $LogDir -Message "Processed $jobsProcessed file job(s) after reaching idle time"
                 }
 
                 $jobs = @($folderJobMap[$folder] | Select-Object -Unique)
