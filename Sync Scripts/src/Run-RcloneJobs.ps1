@@ -816,11 +816,16 @@ function Add-FolderWatcher {
                 OldFullPath = [string]$fileEvent.OldFullPath
             }
             
-            # Add to queue (only root files reach here)
+            # Add to queue (only root files reach here) - atomic check-and-create with lock
             if (-not $sync.EventQueue.ContainsKey($folder)) {
-                $sync.EventQueue[$folder] = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
+                try {
+                    # Use try/catch to handle race where another thread creates the queue
+                    $sync.EventQueue[$folder] = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
+                } catch { }
             }
-            $sync.EventQueue[$folder].Enqueue($eventRecord)
+            if ($sync.EventQueue.ContainsKey($folder)) {
+                $sync.EventQueue[$folder].Enqueue($eventRecord)
+            }
             
             # Mark folder as having pending changes
             $sync.ChangedFolders[$folder] = $true
@@ -962,6 +967,7 @@ function Start-FolderMonitoring {
 
     # Track folder snapshots so only real content changes trigger jobs
     $folderState = @{}
+    $lastSnapshotCheck = @{}  # Cache last snapshot check time per folder to avoid excessive polling
     $configLastCheck = Get-Date
     $configCheckInterval = 30  # Check config every 30 seconds for changes
     $lastConfigModTime = (Get-Item -LiteralPath $ConfigPath -ErrorAction SilentlyContinue).LastWriteTime
@@ -1185,25 +1191,29 @@ function Start-FolderMonitoring {
                                 }
 
                                 if (-not $watcherSync.FileJobQueues.ContainsKey($folder)) {
-                                    $watcherSync.FileJobQueues[$folder] = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
+                                    try {
+                                        $watcherSync.FileJobQueues[$folder] = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
+                                    } catch { }
                                 }
 
-                                try {
-                                    $watcherSync.FileJobQueues[$folder].Enqueue($fileJob)
-                                    # Keep global queue for compatibility/observability.
-                                    $watcherSync.FileJobQueue.Enqueue($fileJob)
-                                }
-                                catch {
-                                    # Roll back dedup marker if queueing failed.
-                                    $watcherSync.ProcessingFilesLock.EnterWriteLock()
+                                if ($watcherSync.FileJobQueues.ContainsKey($folder)) {
                                     try {
-                                        $watcherSync.ProcessingFiles.Remove($fullPath) | Out-Null
+                                        $watcherSync.FileJobQueues[$folder].Enqueue($fileJob)
+                                        # Keep global queue for compatibility/observability.
+                                        $watcherSync.FileJobQueue.Enqueue($fileJob)
                                     }
-                                    finally {
-                                        $watcherSync.ProcessingFilesLock.ExitWriteLock()
+                                    catch {
+                                        # Roll back dedup marker if queueing failed.
+                                        $watcherSync.ProcessingFilesLock.EnterWriteLock()
+                                        try {
+                                            $watcherSync.ProcessingFiles.Remove($fullPath) | Out-Null
+                                        }
+                                        finally {
+                                            $watcherSync.ProcessingFilesLock.ExitWriteLock()
+                                        }
+                                        Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to queue file job for '$fullPath': $_"
+                                        continue
                                     }
-                                    Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to queue file job for '$fullPath': $_"
-                                    continue
                                 }
                                 
                                 Write-RunnerLog -LogDir $LogDir -Message "Queued file job: $fullPath for $jobName"
@@ -1222,6 +1232,16 @@ function Start-FolderMonitoring {
                     }
                 }
 
+                # Optimization: Skip snapshot check if folder is idle and no pending changes
+                # This prevents expensive re-hashing on every 2-second monitor cycle
+                $shouldCheckSnapshot = $state.PendingChange -or ($null -eq $lastSnapshotCheck[$folder]) -or ((Get-Date) - $lastSnapshotCheck[$folder]).TotalSeconds -ge 15
+                
+                if (-not $shouldCheckSnapshot) {
+                    # Still pending but snapshot wasn't checked recently enough - continue to next folder
+                    continue
+                }
+                
+                $lastSnapshotCheck[$folder] = Get-Date
                 $currentSnapshot = Get-FolderSnapshotSignature -FolderPath $folder
                 
                 if ($currentSnapshot -in @('ERROR_ACCESS', 'ERROR_READ')) {
@@ -1278,8 +1298,10 @@ function Start-FolderMonitoring {
                         finally { $watcherSync.ProcessingFilesLock.ExitWriteLock() }
                         continue
                     }
-                    if ($null -eq $batchedFileJobs[$jobName]) { $batchedFileJobs[$jobName] = @() }
-                    $batchedFileJobs[$jobName] += $fileJob
+                    if ($null -eq $batchedFileJobs[$jobName]) { 
+                        $batchedFileJobs[$jobName] = [System.Collections.Generic.List[object]]::new()
+                    }
+                    $batchedFileJobs[$jobName].Add($fileJob)
                 }
 
                 foreach ($jobName in $batchedFileJobs.Keys) {
@@ -1685,8 +1707,16 @@ catch {
     throw
 }
 finally {
-    if ($ownsMutex) {
-        $mutex.ReleaseMutex() | Out-Null
+    # Clean up threading resources
+    try {
+        if ($ownsMutex) {
+            $mutex.ReleaseMutex() | Out-Null
+        }
+    } catch { }
+    finally {
+        try { $mutex.Dispose() } catch { }
     }
-    $mutex.Dispose()
+    
+    # Dispose ReaderWriterLockSlim if it was created
+    try { $watcherSync.ProcessingFilesLock.Dispose() } catch { }
 }
