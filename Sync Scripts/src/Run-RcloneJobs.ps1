@@ -1080,50 +1080,47 @@ function Save-FolderSnapshots {
         [Parameter(Mandatory = $true)][hashtable]$FolderState,
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
         [Parameter(Mandatory = $true)][string]$LogDir,
-        [Parameter(Mandatory = $false)][hashtable]$SyncStatus = @{}  # folder => 'success'|'failed'|$null
+        [Parameter(Mandatory = $false)][hashtable]$SyncStatus = @{}
     )
 
     try {
-        # Snapshots stored in .state/ directory (not in logs/)
         $stateDir = Join-Path $ProjectRoot '.state'
         
-        # Create .state directory - ensure it exists without throwing errors
         try {
             $null = New-Item -ItemType Directory -Force -Path $stateDir -ErrorAction Stop | Out-Null
         }
         catch {
-            # Log warning but don't crash - snapshot save is not critical
             Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to create .state directory for snapshots: $_"
-            return  # Cannot save snapshots without directory
+            return
         }
         
         $stateFile = Join-Path $stateDir 'folder-snapshots.json'
+        $now = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
         
-        $state = @{
-            timestamp = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-            folders = @{}
-        }
-        
+        # Build clean JSON object using PSCustomObject for better serialization
+        $folderSnapshots = @{}
         foreach ($folder in $FolderState.Keys) {
             $lastSyncStatus = if ($SyncStatus.ContainsKey($folder)) { $SyncStatus[$folder] } else { $null }
-            $lastSyncTime = if ($lastSyncStatus -eq 'success') { Get-Date -Format 'yyyy-MM-dd HH:mm:ss' } else { $null }
+            $lastSyncTime = if ($lastSyncStatus -eq 'success') { $now } else { $null }
+            $lastChangeTime = if ($null -ne $FolderState[$folder].LastChange) { $FolderState[$folder].LastChange.ToString('yyyy-MM-dd HH:mm:ss') } else { $null }
             
-            # Extract LastChange as string if it exists
-            $lastChangeTime = $null
-            if ($null -ne $FolderState[$folder].LastChange) {
-                $lastChangeTime = $FolderState[$folder].LastChange.ToString('yyyy-MM-dd HH:mm:ss')
-            }
-            
-            $state.folders[$folder] = @{
+            $folderSnapshots[$folder] = [PSCustomObject]@{
                 snapshot = [string]$FolderState[$folder].Snapshot
                 lastChange = $lastChangeTime
                 lastSyncStatus = $lastSyncStatus
                 lastSuccessfulSync = $lastSyncTime
-                lastSaved = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+                lastSaved = $now
             }
         }
         
-        $state | ConvertTo-Json -Depth 10 | Set-Content -Path $stateFile -Force
+        # Build root object with proper structure
+        $rootObject = [PSCustomObject]@{
+            timestamp = $now
+            folders = $folderSnapshots
+        } | ConvertTo-Json -Depth 3 -Compress:$false
+        
+        $rootObject | Set-Content -Path $stateFile -Force -Encoding UTF8
+        Write-RunnerLog -LogDir $LogDir -Message "Snapshots saved successfully to $stateFile"
     }
     catch {
         Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to save folder snapshots: $_"
@@ -1365,17 +1362,22 @@ function Start-FolderMonitoring {
     # ===================================================================
     # SNAPSHOT PERSISTENCE STRATEGY
     # ===================================================================
-    # Save snapshots on: (1) startup, (2) after job success, (3) 15-min fallback
+    # Save snapshots on: (1) after first accessible check, (2) after job success, (3) 15-min fallback
     # This balances reliable change detection with minimal I/O
-    # Task Scheduler forcefully kills process, so post-job snapshots are critical
+    # Don't save empty/error snapshots - wait until folders are accessible
     # ===================================================================
     $lastSuccessfulSnapshotTime = Get-Date
     $snapshotIntervalSeconds = 900  # 15 minutes as fallback
     $folderSyncStatus = @{}  # Track sync status per folder (success|failed|$null)
     
-    # Save initial snapshot on startup
-    Save-FolderSnapshots -FolderState $folderState -ProjectRoot $ProjectRoot -LogDir $LogDir -SyncStatus $folderSyncStatus
-    Write-RunnerLog -LogDir $LogDir -Message "Initial snapshot saved on startup for change detection on next restart"
+    # Only save initial snapshot if all folders have valid hashes (not empty or ERROR_*)
+    $hasValidSnapshots = $folderState.Values | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Snapshot) -and $_.Snapshot -notmatch 'ERROR_' }
+    if ($hasValidSnapshots) {
+        Save-FolderSnapshots -FolderState $folderState -ProjectRoot $ProjectRoot -LogDir $LogDir -SyncStatus $folderSyncStatus
+        Write-RunnerLog -LogDir $LogDir -Message "Initial snapshot saved on startup for change detection on next restart"
+    } else {
+        Write-RunnerLog -LogDir $LogDir -Message "Deferring initial snapshot save: waiting for all folders to become accessible"
+    }
 
     try {
         while ($true) {
@@ -1387,12 +1389,12 @@ function Start-FolderMonitoring {
             if ($processingFilesCleanupCounter -ge 450) {  # Every 900 seconds = 15 minutes (450 x 2 second cycles)
                 $processingFilesCleanupCounter = 0
                 
-                # 15-minute fallback: Save snapshots if no job success in last 15 minutes
-                $timeSinceLastSnapshot = ($now - $lastSuccessfulSnapshotTime).TotalSeconds
-                if ($timeSinceLastSnapshot -ge $snapshotIntervalSeconds) {
+                # Check if we need to save deferred initial snapshot (for inaccessible folders that now have real hashes)
+                $hasValidSnapshots = $folderState.Values | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Snapshot) -and $_.Snapshot -notmatch 'ERROR_' } | Measure-Object | Select-Object -ExpandProperty Count
+                if ($hasValidSnapshots -gt 0) {
                     Save-FolderSnapshots -FolderState $folderState -ProjectRoot $ProjectRoot -LogDir $LogDir -SyncStatus $folderSyncStatus
                     $lastSuccessfulSnapshotTime = $now
-                    Write-RunnerLog -LogDir $LogDir -Message "Snapshot saved (15-minute fallback interval)"
+                    Write-RunnerLog -LogDir $LogDir -Message "Snapshot saved (periodic 15-minute interval, valid snapshots: $hasValidSnapshots)"
                 }
                 
                 $watcherSync.ProcessingFilesLock.EnterReadLock()
