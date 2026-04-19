@@ -1215,7 +1215,8 @@ function Test-PreflightRequirements {
     param(
         [Parameter(Mandatory = $true)]$Config,
         [Parameter(Mandatory = $true)][string]$LogDir,
-        [Parameter(Mandatory = $false)][bool]$IsSilent = $false
+        [Parameter(Mandatory = $false)][bool]$IsSilent = $false,
+        [Parameter(Mandatory = $false)][bool]$NotifyOnEvents = $false
     )
 
     $rcloneExe = Resolve-RcloneExe
@@ -1336,6 +1337,12 @@ function Test-PreflightRequirements {
         $msg = "CRITICAL: Preflight validation failed. Cannot proceed with jobs: $summary"
         Write-RunnerLog -LogDir $LogDir -Message $msg
         Write-ShellMessage -Message $msg -IsSilent $IsSilent
+        
+        # Show UI notification about the failure before exiting
+        $notificationTitle = "[Nexus Sync] Configuration Invalid"
+        $notificationMsg = "Preflight validation failed. Check logs for details. Common issues: expired rclone token, missing remote paths, inaccessible folders."
+        Show-EventNotification -Title $notificationTitle -Message $notificationMsg -VisibleSeconds 15 -Enabled:$NotifyOnEvents
+        
         throw $msg
     }
 
@@ -2082,7 +2089,7 @@ try {
         Write-ShellMessage -Message "Running preflight validation..." -IsSilent $Silent
         
         try {
-            Test-PreflightRequirements -Config $cfg -LogDir $logDir -IsSilent $Silent
+            Test-PreflightRequirements -Config $cfg -LogDir $logDir -IsSilent $Silent -NotifyOnEvents $NotifyOnEvents
         }
         catch {
             $msg = "Preflight validation failed: $_"
@@ -2160,7 +2167,7 @@ try {
     # Preflight validation before executing jobs
     Write-ShellMessage -Message "Validating job configuration and remote connectivity..." -IsSilent $Silent
     try {
-        Test-PreflightRequirements -Config $cfg -LogDir $logDir -IsSilent $Silent
+        Test-PreflightRequirements -Config $cfg -LogDir $logDir -IsSilent $Silent -NotifyOnEvents $NotifyOnEvents
     }
     catch {
         $msg = "Job execution aborted - Preflight validation failed: $_"
