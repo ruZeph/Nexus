@@ -419,7 +419,8 @@ try {
     }
 
     $waitForNetwork = [bool]$TaskScheduler
-    $notifyOnEvents = [bool]$TaskScheduler
+    # Enable event notifications by default so manual launcher runs also surface failures.
+    $notifyOnEvents = $true
     $runnerParams = Build-RunnerParameters -SelectedMode $Mode -ResolvedConfigPath $resolvedConfigPath -SelectedJobName $JobName -SelectedSourceFolder $SourceFolder -SelectedIdle $IdleTimeSeconds -SelectedOperation $Operation -SelectedFailFast:$FailFast -SelectedSilent:$Silent -SelectedWaitForNetwork:$waitForNetwork -SelectedNotifyOnEvents:$notifyOnEvents
     $runnerArgs = Build-RunnerArgs -SelectedMode $Mode -ResolvedConfigPath $resolvedConfigPath -SelectedJobName $JobName -SelectedSourceFolder $SourceFolder -SelectedIdle $IdleTimeSeconds -SelectedOperation $Operation -SelectedFailFast:$FailFast -SelectedSilent:$Silent -SelectedWaitForNetwork:$waitForNetwork -SelectedNotifyOnEvents:$notifyOnEvents
 
