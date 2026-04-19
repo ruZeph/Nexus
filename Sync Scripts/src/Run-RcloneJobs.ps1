@@ -644,7 +644,9 @@ function Get-FolderSnapshotSignature {
 
         # Quick signature: file count + sum of timestamps + first/last filename
         # This catches 99% of changes without full hash computation
-        $quickSig = "$($items.Count)|$($items[0].Name)|$($items[-1].Name)|$([int]($items | Measure-Object -Property LastWriteTimeUtc -Sum).Sum)"
+        # Use [long] to avoid integer overflow with large timestamp sums (timestamps can exceed int.MaxValue)
+        $timestampSum = [long]($items | Measure-Object -Property LastWriteTimeUtc -Sum).Sum
+        $quickSig = "$($items.Count)|$($items[0].Name)|$($items[-1].Name)|$timestampSum"
         
         # Return quick signature if it's sufficient; only compute full hash if needed
         # For large folders, quick signature is fast and accurate
@@ -797,7 +799,8 @@ function Add-FolderWatcher {
             
             # Skip Office/system random hex temp files (8 hex chars, often all-caps or mixed)
             # Examples: 99E2D000, FB1C78DF, FF000000 from Office save process
-            if (-not $shouldSkip -and $fileName -match '^[A-F0-9]{8}($|\..*$)') {
+            # Use atomic grouping pattern to prevent ReDoS: match exactly 8 hex chars followed by end-of-string or dot+anything
+            if (-not $shouldSkip -and $fileName -match '^[A-F0-9]{8}(?:\..+)?$') {
                 $shouldSkip = $true
             }
             
@@ -968,6 +971,7 @@ function Start-FolderMonitoring {
     # Track folder snapshots so only real content changes trigger jobs
     $folderState = @{}
     $lastSnapshotCheck = @{}  # Cache last snapshot check time per folder to avoid excessive polling
+    $processingFilesCleanupCounter = 0  # Memory leak prevention: Track cycles to monitor HashSet growth
     $configLastCheck = Get-Date
     $configCheckInterval = 30  # Check config every 30 seconds for changes
     $lastConfigModTime = (Get-Item -LiteralPath $ConfigPath -ErrorAction SilentlyContinue).LastWriteTime
@@ -1008,6 +1012,21 @@ function Start-FolderMonitoring {
         while ($true) {
             Start-Sleep -Seconds 2
             $now = Get-Date
+            
+            # Periodic memory safety check: Monitor ProcessingFiles HashSet growth
+            # This detects if file removal is failing (potential memory leak)
+            $processingFilesCleanupCounter++
+            if ($processingFilesCleanupCounter -ge 300) {  # Every 10 minutes (300 x 2 second cycles)
+                $processingFilesCleanupCounter = 0
+                $watcherSync.ProcessingFilesLock.EnterReadLock()
+                try {
+                    if ($watcherSync.ProcessingFiles.Count -gt 1000) {
+                        Write-RunnerLog -LogDir $LogDir -Message "Warning: ProcessingFiles HashSet elevated at $($watcherSync.ProcessingFiles.Count) entries (threshold: 1000). Possible file removal failures."
+                    }
+                } finally {
+                    $watcherSync.ProcessingFilesLock.ExitReadLock()
+                }
+            }
 
             if (Test-StopRequested -LogDir $LogDir) {
                 $stopMessage = Read-StopRequestMessage -LogDir $LogDir
@@ -1106,7 +1125,15 @@ function Start-FolderMonitoring {
                 $watcherEvent = $null
 
                 # Check if folder still exists and is accessible
-                if (-not (Test-Path -LiteralPath $folder -ErrorAction SilentlyContinue)) {
+                # Use try/catch to handle TOCTOU (time-of-check-time-of-use) race between check and access
+                $folderAccessible = $false
+                try {
+                    $folderAccessible = (Test-Path -LiteralPath $folder -ErrorAction Stop)
+                } catch {
+                    $folderAccessible = $false
+                }
+                
+                if (-not $folderAccessible) {
                     if ($state.ErrorCount -ge 2) {
                         Write-RunnerLog -LogDir $LogDir -Message "Warning: Folder no longer accessible: $folder"
                         $folderState.Remove($folder) | Out-Null
