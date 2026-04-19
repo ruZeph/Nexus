@@ -330,18 +330,24 @@ function Show-EventNotification {
     $safeMessage = ConvertTo-CmdSafeText -Text $Message
 
     try {
-        # Keep notifications parser-safe by avoiding shell command construction.
         Write-Host "[NOTICE][$safeTitle] $safeMessage" -ForegroundColor Cyan
 
         if ($Popup) {
-            Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
-            Add-Type -AssemblyName System.Drawing -ErrorAction SilentlyContinue
-            [void][System.Windows.Forms.MessageBox]::Show(
-                $safeMessage,
-                $safeTitle,
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Error
-            )
+            $encodedTitle = $safeTitle -replace "'", "''"
+            $encodedMessage = $safeMessage -replace "'", "''"
+            $notificationScript = @"
+`$Host.UI.RawUI.WindowTitle = '$encodedTitle'
+Write-Host '[Nexus Sync Notification]' -ForegroundColor Yellow
+Write-Host ''
+Write-Host '$encodedTitle' -ForegroundColor Cyan
+Write-Host '$encodedMessage' -ForegroundColor White
+Write-Host ''
+Write-Host 'Press Enter to close this notification window.' -ForegroundColor Gray
+try { [console]::Beep(1200, 220) } catch { }
+[void](Read-Host)
+"@
+
+            Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-NoLogo', '-ExecutionPolicy', 'Bypass', '-Command', $notificationScript) | Out-Null
         }
     }
     catch {
@@ -1350,9 +1356,9 @@ function Test-PreflightRequirements {
         Write-RunnerLog -LogDir $LogDir -Message $msg
         Write-ShellMessage -Message $msg -IsSilent $IsSilent
         
-        # Show UI notification about the failure before exiting
+        # Surface the actual reason in detached notifications.
         $notificationTitle = "[Nexus Sync] Configuration Invalid"
-        $notificationMsg = "Preflight validation failed. Check logs for details. Common issues: expired rclone token, missing remote paths, inaccessible folders."
+        $notificationMsg = "Preflight validation failed: $summary"
         Show-EventNotification -Title $notificationTitle -Message $notificationMsg -VisibleSeconds 15 -Enabled:$NotifyOnEvents -Popup:$NotifyOnEvents
         
         throw $msg
@@ -2336,11 +2342,14 @@ try {
     }
 }
 catch {
+    $fatalReason = $_.Exception.Message
+    Show-EventNotification -Title '[Nexus Sync] Runner Failed' -Message "Job runner exited with error: $fatalReason" -VisibleSeconds 20 -Enabled:$NotifyOnEvents -Popup:$NotifyOnEvents
+
     $errLogDir = Join-Path $projectRoot 'logs'
     New-Item -ItemType Directory -Force -Path $errLogDir | Out-Null
     $errLog = Join-Path $errLogDir 'runner-error.log'
-    Add-Content -LiteralPath $errLog -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] ERROR: $($_.Exception.Message)"
-    Write-Host "ERROR CAUGHT: $($_.Exception.Message)" -ForegroundColor Red
+    Add-Content -LiteralPath $errLog -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] ERROR: $fatalReason"
+    Write-Host "ERROR CAUGHT: $fatalReason" -ForegroundColor Red
     Write-Host "Exiting with code 1" -ForegroundColor Red
     exit 1
 }
