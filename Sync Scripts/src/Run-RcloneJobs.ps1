@@ -1063,6 +1063,22 @@ function Get-HealthCheckStatus {
     return $status
 }
 
+function Format-JsonText {
+    param(
+        [Parameter(Mandatory = $true)][string]$JsonText,
+        [int]$Depth = 20
+    )
+
+    try {
+        # Parse + re-emit JSON to enforce consistent pretty formatting.
+        return ($JsonText | ConvertFrom-Json | ConvertTo-Json -Depth $Depth)
+    }
+    catch {
+        # If formatting fails, preserve the original payload.
+        return $JsonText
+    }
+}
+
 function Save-FolderSnapshots {
     param(
         [Parameter(Mandatory = $true)][hashtable]$FolderState,
@@ -1120,9 +1136,12 @@ function Save-FolderSnapshots {
         $rootObject = [PSCustomObject]@{
             timestamp = $now
             folders = $folderSnapshots
-        } | ConvertTo-Json -Depth 5 -Compress
+        }
+
+        $rawJson = $rootObject | ConvertTo-Json -Depth 5 -Compress
+        $formattedJson = Format-JsonText -JsonText $rawJson -Depth 20
         
-        $rootObject | Set-Content -Path $stateFile -Force -Encoding UTF8
+        $formattedJson | Set-Content -Path $stateFile -Force -Encoding UTF8
         Write-RunnerLog -LogDir $LogDir -Message "Snapshots saved successfully to $stateFile"
     }
     catch {
