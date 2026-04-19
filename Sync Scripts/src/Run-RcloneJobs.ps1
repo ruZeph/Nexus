@@ -1653,12 +1653,17 @@ function Start-FolderMonitoring {
                 $lastSnapshotCheck[$folder] = Get-Date
                 $currentSnapshot = Get-FolderSnapshotSignature -FolderPath $folder
                 
+                # If snapshot computation failed BUT folder is pending change, allow execution to proceed
+                # This ensures startup syncs work even if snapshot hashing fails temporarily
                 if ($currentSnapshot -in @('ERROR_ACCESS', 'ERROR_READ')) {
                     $state.ErrorCount++
                     if ($state.ErrorCount -ge 3) {
                         Write-RunnerLog -LogDir $LogDir -Message "Warning: Persistent access error: $folder"
                     }
-                    continue
+                    # If folder is marked pending from startup change detection, don't skip - allow idle timeout to work
+                    if (-not $state.PendingChange) {
+                        continue
+                    }
                 }
                 
                 if ($currentSnapshot -ne $state.Snapshot) {
