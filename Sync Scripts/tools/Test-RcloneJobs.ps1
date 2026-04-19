@@ -172,7 +172,7 @@ function Test-ScriptStructure {
     Assert-True $hasTest "Should have Test-RateLimitError function"
 
     Write-TestCase "Script has mutex lock mechanism"
-    $hasMutex = [bool]($content -match 'Global\\RcloneBackupRunner')
+    $hasMutex = [bool]($content -match 'System\.Threading\.Mutex\]::new\(')
     Assert-True $hasMutex "Should have mutex lock implementation"
 
     Write-TestCase "Script has job interval logic"
@@ -1073,14 +1073,14 @@ function Test-FileJobExecutionAfterIdle {
     
     Write-TestCase "File jobs execute after idle time (not immediately)"
     $hasIdleCheck = [bool]($scriptContent -match '\$secsIdle.*IdleTimeSeconds|\$secsIdle\s*-lt')
-    $hasFileJobProcessing = [bool]($scriptContent -match 'FileJobQueue\.Count.*>.*0|while.*FileJobQueue')
+    $hasFileJobProcessing = [bool]($scriptContent -match 'FileJobQueue\.Count.*>.*0|FileJobQueues|while.*folderQueue')
     
     Assert-True $hasIdleCheck "Should check idle time before processing"
     Assert-True $hasFileJobProcessing "Should process file jobs"
     Write-Pass "File job execution respects idle time"
 
     Write-TestCase "File job processor exists and dequeues jobs"
-    $hasDequeue = [bool]($scriptContent -match 'FileJobQueue\.Dequeue|Dequeue.*fileJob')
+    $hasDequeue = [bool]($scriptContent -match 'folderQueue\.Dequeue|FileJobQueue\.Dequeue|Dequeue.*fileJob')
     $hasLogResult = [bool]($scriptContent -match '\[FILE JOB RESULT\]|FILE.*JOB.*RESULT')
     
     Assert-True $hasDequeue "Should dequeue file jobs"

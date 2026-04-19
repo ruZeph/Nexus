@@ -16,7 +16,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 
-$mutex = [System.Threading.Mutex]::new($false, 'Global\RcloneBackupRunner')
+$currentUserSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$safeUserSid = $currentUserSid -replace '[^A-Za-z0-9_-]', '_'
+$projectDiscriminator = [System.IO.Path]::GetFileName($projectRoot)
+$mutexName = "Local\RcloneBackupRunner_${safeUserSid}_$projectDiscriminator"
+$mutex = [System.Threading.Mutex]::new($false, $mutexName)
 $ownsMutex = $false
 
 function Write-JobLog {
@@ -282,10 +286,10 @@ function Show-EventNotification {
 
     $safeTitle = ConvertTo-CmdSafeText -Text $Title
     $safeMessage = ConvertTo-CmdSafeText -Text $Message
-    $cmdLine = "title $safeTitle & echo [NOTICE] $safeMessage & timeout /t $VisibleSeconds /nobreak >nul & exit"
 
     try {
-        Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', $cmdLine) | Out-Null
+        # Keep notifications parser-safe by avoiding shell command construction.
+        Write-Host "[NOTICE][$safeTitle] $safeMessage" -ForegroundColor Cyan
     }
     catch {
         # Notification failures should never break sync execution.
@@ -948,6 +952,7 @@ function Start-FolderMonitoring {
         ChangedFolders = [hashtable]::Synchronized(@{})
         EventQueue = [hashtable]::Synchronized(@{})
         FileJobQueue = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
+        FileJobQueues = [hashtable]::Synchronized(@{})
         ProcessingFiles = [System.Collections.Generic.HashSet[string]]::new()
         ProcessingFilesLock = [System.Threading.ReaderWriterLockSlim]::new()
     })
@@ -1151,16 +1156,21 @@ function Start-FolderMonitoring {
                             # for immediate processing by file-level workers
                             $jobs = @($folderJobMap[$folder] | Select-Object -Unique)
                             foreach ($jobName in $jobs) {
-                                # Check if file already being processed (deduplication)
-                                $watcherSync.ProcessingFilesLock.EnterReadLock()
+                                # Atomic deduplication: check-and-add in a single write lock.
+                                $shouldQueue = $false
+                                $watcherSync.ProcessingFilesLock.EnterWriteLock()
                                 try {
-                                    if ($watcherSync.ProcessingFiles.Contains($fullPath)) {
-                                        # File already being synced, skip re-queueing
-                                        continue
+                                    if (-not $watcherSync.ProcessingFiles.Contains($fullPath)) {
+                                        $watcherSync.ProcessingFiles.Add($fullPath) | Out-Null
+                                        $shouldQueue = $true
                                     }
                                 }
                                 finally {
-                                    $watcherSync.ProcessingFilesLock.ExitReadLock()
+                                    $watcherSync.ProcessingFilesLock.ExitWriteLock()
+                                }
+
+                                if (-not $shouldQueue) {
+                                    continue
                                 }
                                 
                                 # Queue file-level job
@@ -1171,15 +1181,27 @@ function Start-FolderMonitoring {
                                     ChangeType = $changeType
                                     QueueTime = $now
                                 }
-                                $watcherSync.FileJobQueue.Enqueue($fileJob)
-                                
-                                # Mark file as being processed
-                                $watcherSync.ProcessingFilesLock.EnterWriteLock()
-                                try {
-                                    $watcherSync.ProcessingFiles.Add($fullPath) | Out-Null
+
+                                if (-not $watcherSync.FileJobQueues.ContainsKey($folder)) {
+                                    $watcherSync.FileJobQueues[$folder] = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
                                 }
-                                finally {
-                                    $watcherSync.ProcessingFilesLock.ExitWriteLock()
+
+                                try {
+                                    $watcherSync.FileJobQueues[$folder].Enqueue($fileJob)
+                                    # Keep global queue for compatibility/observability.
+                                    $watcherSync.FileJobQueue.Enqueue($fileJob)
+                                }
+                                catch {
+                                    # Roll back dedup marker if queueing failed.
+                                    $watcherSync.ProcessingFilesLock.EnterWriteLock()
+                                    try {
+                                        $watcherSync.ProcessingFiles.Remove($fullPath) | Out-Null
+                                    }
+                                    finally {
+                                        $watcherSync.ProcessingFilesLock.ExitWriteLock()
+                                    }
+                                    Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to queue file job for '$fullPath': $_"
+                                    continue
                                 }
                                 
                                 Write-RunnerLog -LogDir $LogDir -Message "Queued file job: $fullPath for $jobName"
@@ -1236,8 +1258,13 @@ function Start-FolderMonitoring {
                 # This keeps responsiveness (files queued fast) but prevents constant triggering
                 
                 $jobsProcessed = 0
-                while ($watcherSync.FileJobQueue.Count -gt 0) {
-                    $fileJob = $watcherSync.FileJobQueue.Dequeue()
+                $folderQueue = $null
+                if ($watcherSync.FileJobQueues.ContainsKey($folder)) {
+                    $folderQueue = $watcherSync.FileJobQueues[$folder]
+                }
+
+                while ($null -ne $folderQueue -and $folderQueue.Count -gt 0) {
+                    $fileJob = $folderQueue.Dequeue()
                     if ($null -eq $fileJob) { break }
                     
                     $jobName = $fileJob.JobName
