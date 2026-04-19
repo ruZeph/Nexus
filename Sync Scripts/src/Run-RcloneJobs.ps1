@@ -1072,7 +1072,8 @@ function Get-HealthCheckStatus {
 function Save-FolderSnapshots {
     param(
         [Parameter(Mandatory = $true)][hashtable]$FolderState,
-        [Parameter(Mandatory = $true)][string]$LogDir
+        [Parameter(Mandatory = $true)][string]$LogDir,
+        [Parameter(Mandatory = $false)][hashtable]$SyncStatus = @{}  # folder => 'success'|'failed'|$null
     )
 
     try {
@@ -1083,9 +1084,14 @@ function Save-FolderSnapshots {
         }
         
         foreach ($folder in $FolderState.Keys) {
+            $lastSyncStatus = if ($SyncStatus.ContainsKey($folder)) { $SyncStatus[$folder] } else { $null }
+            $lastSyncTime = if ($lastSyncStatus -eq 'success') { Get-Date -Format 'yyyy-MM-dd HH:mm:ss' } else { $null }
+            
             $state.folders[$folder] = @{
                 snapshot = $FolderState[$folder].Snapshot
                 lastChange = $FolderState[$folder].LastChange
+                lastSyncStatus = $lastSyncStatus  # 'success', 'failed', or $null (never synced)
+                lastSuccessfulSync = $lastSyncTime  # Only set if sync was successful
                 lastSaved = Get-Date
             }
         }
@@ -1135,17 +1141,32 @@ function Find-ChangedFoldersOnRestart {
     $changedFolders = @()
     
     foreach ($folder in $WatchedFolders) {
+        $reasons = @()
+        
+        # Case 1: No snapshot exists (first time monitoring this folder)
         if (-not $savedSnapshots.ContainsKey($folder)) {
-            # New folder, no saved snapshot
-            continue
+            $reasons += "No previous snapshot (first sync)"
+        } else {
+            $savedData = $savedSnapshots[$folder]
+            $currentSnapshot = Get-FolderSnapshotSignature -FolderPath $folder
+            $savedSnapshot = $savedData.snapshot
+            $lastSyncStatus = if ($savedData.PSObject.Properties.Name -contains 'lastSyncStatus') { $savedData.lastSyncStatus } else { $null }
+            
+            # Case 2: Last sync failed or never completed
+            if ($lastSyncStatus -ne 'success') {
+                $reasons += "Last sync was not successful (status: $lastSyncStatus)"
+            }
+            
+            # Case 3: Folder contents changed while monitor was stopped
+            if ($currentSnapshot -notin @('ERROR_ACCESS', 'ERROR_READ') -and $currentSnapshot -ne $savedSnapshot) {
+                $reasons += "Folder contents changed (snapshot mismatch)"
+            }
         }
         
-        $currentSnapshot = Get-FolderSnapshotSignature -FolderPath $folder
-        $savedSnapshot = $savedSnapshots[$folder].snapshot
-        
-        if ($currentSnapshot -notin @('ERROR_ACCESS', 'ERROR_READ') -and $currentSnapshot -ne $savedSnapshot) {
+        # If ANY reason exists, mark folder for sync
+        if ($reasons.Count -gt 0) {
             $changedFolders += $folder
-            $msg = "Detected changes in folder while monitor was stopped: $folder"
+            $msg = "[RESTART CHANGE DETECTION] $folder | Reasons: $(($reasons -join '; '))"
             Write-RunnerLog -LogDir $LogDir -Message $msg
             Write-Host "[INFO] $msg" -ForegroundColor Cyan
         }
@@ -1307,9 +1328,10 @@ function Start-FolderMonitoring {
     # ===================================================================
     $lastSuccessfulSnapshotTime = Get-Date
     $snapshotIntervalSeconds = 900  # 15 minutes as fallback
+    $folderSyncStatus = @{}  # Track sync status per folder (success|failed|$null)
     
     # Save initial snapshot on startup
-    Save-FolderSnapshots -FolderState $folderState -LogDir $LogDir
+    Save-FolderSnapshots -FolderState $folderState -LogDir $LogDir -SyncStatus $folderSyncStatus
     Write-RunnerLog -LogDir $LogDir -Message "Initial snapshot saved on startup for change detection on next restart"
 
     try {
@@ -1325,7 +1347,7 @@ function Start-FolderMonitoring {
                 # 15-minute fallback: Save snapshots if no job success in last 15 minutes
                 $timeSinceLastSnapshot = ($now - $lastSuccessfulSnapshotTime).TotalSeconds
                 if ($timeSinceLastSnapshot -ge $snapshotIntervalSeconds) {
-                    Save-FolderSnapshots -FolderState $folderState -LogDir $LogDir
+                    Save-FolderSnapshots -FolderState $folderState -LogDir $LogDir -SyncStatus $folderSyncStatus
                     $lastSuccessfulSnapshotTime = $now
                     Write-RunnerLog -LogDir $LogDir -Message "Snapshot saved (15-minute fallback interval)"
                 }
@@ -1345,7 +1367,7 @@ function Start-FolderMonitoring {
                 Write-RunnerLog -LogDir $LogDir -Message "Stop request detected. Exiting monitor loop gracefully. Reason: $stopMessage"
                 
                 # Save final snapshot before graceful shutdown
-                Save-FolderSnapshots -FolderState $folderState -LogDir $LogDir
+                Save-FolderSnapshots -FolderState $folderState -LogDir $LogDir -SyncStatus $folderSyncStatus
                 Write-RunnerLog -LogDir $LogDir -Message "Final snapshot saved on graceful shutdown"
                 
                 Clear-StopRequest -LogDir $LogDir
@@ -1758,13 +1780,21 @@ function Start-FolderMonitoring {
                         Write-RunnerLog -LogDir $LogDir -Message $resultMsg
                         if ($jobResult -ne 'success') {
                             Write-RunnerErrorLog -LogDir $LogDir -Message $resultMsg
+                            # Mark folder as failed sync for restart detection
+                            foreach ($j in $jobs) {
+                                $folderSyncStatus[$j] = 'failed'
+                            }
                         } else {
                             # Save snapshot after successful job execution
                             # This ensures change detection works reliably on restart
                             # Critical for Task Scheduler's forceful termination scenario
-                            Save-FolderSnapshots -FolderState $folderState -LogDir $LogDir
+                            # Track sync success status per folder for restart detection
+                            foreach ($j in $jobs) {
+                                $folderSyncStatus[$j] = 'success'
+                            }
+                            Save-FolderSnapshots -FolderState $folderState -LogDir $LogDir -SyncStatus $folderSyncStatus
                             $lastSuccessfulSnapshotTime = Get-Date
-                            Write-RunnerLog -LogDir $LogDir -Message "Snapshot saved after successful job execution"
+                            Write-RunnerLog -LogDir $LogDir -Message "Snapshot saved after successful job execution (folder marked as synced)"
                         }
 
                         # Clean up job execution marker
@@ -1781,7 +1811,7 @@ function Start-FolderMonitoring {
     }
     finally {
         # Save final snapshots before stopping
-        Save-FolderSnapshots -FolderState $folderState -LogDir $LogDir
+        Save-FolderSnapshots -FolderState $folderState -LogDir $LogDir -SyncStatus $folderSyncStatus
         
         foreach ($folderPath in @($watchers.Keys)) {
             Remove-FolderWatcher -FolderPath $folderPath -Watchers $watchers -LogDir $LogDir
