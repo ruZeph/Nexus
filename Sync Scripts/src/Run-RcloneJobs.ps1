@@ -778,6 +778,7 @@ function Add-FolderWatcher {
             $fileName = [System.IO.Path]::GetFileName($fullPath)
             $shouldSkip = $false
             
+            # Check against known temp patterns
             foreach ($pattern in $tempPatterns) {
                 if ($fileName -like $pattern) {
                     $shouldSkip = $true
@@ -785,8 +786,14 @@ function Add-FolderWatcher {
                 }
             }
             
-            # Also skip files starting with a dot (hidden files like .git, .lock)
-            if ($fileName.StartsWith('.')) {
+            # Skip files starting with a dot (hidden files like .git, .lock)
+            if (-not $shouldSkip -and $fileName.StartsWith('.')) {
+                $shouldSkip = $true
+            }
+            
+            # Skip Office/system random hex temp files (8 hex chars, often all-caps or mixed)
+            # Examples: 99E2D000, FB1C78DF, FF000000 from Office save process
+            if (-not $shouldSkip -and $fileName -match '^[A-F0-9]{8}($|\..*$)') {
                 $shouldSkip = $true
             }
             
@@ -940,6 +947,9 @@ function Start-FolderMonitoring {
     $watcherSync = [hashtable]::Synchronized(@{ 
         ChangedFolders = [hashtable]::Synchronized(@{})
         EventQueue = [hashtable]::Synchronized(@{})
+        FileJobQueue = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
+        ProcessingFiles = [System.Collections.Generic.HashSet[string]]::new()
+        ProcessingFilesLock = [System.Threading.ReaderWriterLockSlim]::new()
     })
     $resourceState = @{}
     $resourceLogInterval = 60
@@ -1133,6 +1143,47 @@ function Start-FolderMonitoring {
                             
                             Write-RunnerLog -LogDir $LogDir -Message $msg
                             Write-ShellMessage -Message $msg -IsSilent $IsSilent
+                            
+                            # ==============================================================
+                            # FILE-LEVEL WORKER POOL: Queue file changes immediately
+                            # ==============================================================
+                            # Instead of waiting for idle time, queue each file change
+                            # for immediate processing by file-level workers
+                            $jobs = @($folderJobMap[$folder] | Select-Object -Unique)
+                            foreach ($jobName in $jobs) {
+                                # Check if file already being processed (deduplication)
+                                $watcherSync.ProcessingFilesLock.EnterReadLock()
+                                try {
+                                    if ($watcherSync.ProcessingFiles.Contains($fullPath)) {
+                                        # File already being synced, skip re-queueing
+                                        continue
+                                    }
+                                }
+                                finally {
+                                    $watcherSync.ProcessingFilesLock.ExitReadLock()
+                                }
+                                
+                                # Queue file-level job
+                                $fileJob = [pscustomobject]@{
+                                    JobName = $jobName
+                                    FolderPath = $folder
+                                    FilePath = $fullPath
+                                    ChangeType = $changeType
+                                    QueueTime = $now
+                                }
+                                $watcherSync.FileJobQueue.Enqueue($fileJob)
+                                
+                                # Mark file as being processed
+                                $watcherSync.ProcessingFilesLock.EnterWriteLock()
+                                try {
+                                    $watcherSync.ProcessingFiles.Add($fullPath) | Out-Null
+                                }
+                                finally {
+                                    $watcherSync.ProcessingFilesLock.ExitWriteLock()
+                                }
+                                
+                                Write-RunnerLog -LogDir $LogDir -Message "Queued file job: $fullPath for $jobName"
+                            }
                         }
                         
                         # Clear the changed folder flag when queue is empty
@@ -1143,6 +1194,76 @@ function Start-FolderMonitoring {
                         # Log queue depth if it was large (helps monitor performance)
                         if ($queueCountBefore -ge 10) {
                             Write-RunnerLog -LogDir $LogDir -Message "Queue monitoring: $folder - started: $queueCountBefore events, processed: $eventsProcessed, remaining: $($eventQueue.Count)"
+                        }
+                    }
+                }
+
+                # ==============================================================
+                # PROCESS FILE-LEVEL JOBS IMMEDIATELY (no idle waiting)
+                # ==============================================================
+                # Pull file jobs from queue and execute workers
+                while ($watcherSync.FileJobQueue.Count -gt 0) {
+                    $fileJob = $watcherSync.FileJobQueue.Dequeue()
+                    if ($null -eq $fileJob) { break }
+                    
+                    $jobName = $fileJob.JobName
+                    $filePath = $fileJob.FilePath
+                    
+                    # Validate job name
+                    if ([string]::IsNullOrWhiteSpace($jobName) -or $jobName -match '[<>:"|?*\\]') {
+                        Write-RunnerLog -LogDir $LogDir -Message "Warning: Invalid job name in file job: $jobName"
+                        
+                        # Remove from processing set
+                        $watcherSync.ProcessingFilesLock.EnterWriteLock()
+                        try {
+                            $watcherSync.ProcessingFiles.Remove($filePath) | Out-Null
+                        }
+                        finally {
+                            $watcherSync.ProcessingFilesLock.ExitWriteLock()
+                        }
+                        continue
+                    }
+                    
+                    Write-RunnerLog -LogDir $LogDir -Message "Processing file job: $filePath for $jobName"
+                    
+                    # Execute job
+                    $jobStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+                    $jobExitCode = $null
+                    $jobResult = 'unknown'
+                    $jobError = ''
+                    
+                    try {
+                        # Run job for this specific file
+                        & $PSCommandPath -JobName $jobName -ConfigPath $ConfigPath -DryRun:$DryRun -Silent:$IsSilent -WaitForNetwork:$WaitForNetwork -NotifyOnEvents:$NotifyOnEvents -ErrorAction SilentlyContinue
+                        $jobExitCode = $LASTEXITCODE
+                        if ($null -eq $jobExitCode) {
+                            $jobExitCode = if ($?) { 0 } else { 1 }
+                        }
+                        $jobResult = if ($jobExitCode -eq 0) { 'success' } else { 'failed' }
+                    }
+                    catch {
+                        $jobResult = 'error'
+                        $jobExitCode = 1
+                        $jobError = $_.Exception.Message
+                        Write-RunnerLog -LogDir $LogDir -Message "Error executing file job for '$filePath': $_"
+                        Write-RunnerErrorLog -LogDir $LogDir -Message "Error executing file job for '$filePath': $_"
+                    }
+                    finally {
+                        $jobStopwatch.Stop()
+                        $jobDurationSec = [math]::Round($jobStopwatch.Elapsed.TotalSeconds, 2)
+                        $resultMsg = "[FILE JOB RESULT] name=$jobName filepath=$filePath result=$jobResult exitcode=$jobExitCode duration_sec=$jobDurationSec"
+                        if (-not [string]::IsNullOrWhiteSpace($jobError)) {
+                            $resultMsg = "$resultMsg error=$jobError"
+                        }
+                        Write-RunnerLog -LogDir $LogDir -Message $resultMsg
+                        
+                        # Remove from processing set (allow re-queueing if changed again)
+                        $watcherSync.ProcessingFilesLock.EnterWriteLock()
+                        try {
+                            $watcherSync.ProcessingFiles.Remove($filePath) | Out-Null
+                        }
+                        finally {
+                            $watcherSync.ProcessingFilesLock.ExitWriteLock()
                         }
                     }
                 }
