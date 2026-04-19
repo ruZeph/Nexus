@@ -1,5 +1,3 @@
-> Substitute example paths, remotes, and intervals with your own values.
-
 # Rclone Backup Job Runner
 
 A PowerShell-based rclone backup runner with two execution modes: **scheduled/manual run** and **real-time monitor mode** triggered by folder changes.
@@ -19,6 +17,7 @@ A PowerShell-based rclone backup runner with two execution modes: **scheduled/ma
 ## Table of Contents
 
 - [Rclone Backup Job Runner](#rclone-backup-job-runner)
+  - [Features](#features)
   - [Table of Contents](#table-of-contents)
   - [Quick Start](#quick-start)
     - [Option A: One-Command Setup](#option-a-one-command-setup)
@@ -38,6 +37,9 @@ A PowerShell-based rclone backup runner with two execution modes: **scheduled/ma
   - [Snapshot System](#snapshot-system)
     - [Fresh Instance Behavior](#fresh-instance-behavior)
     - [Scenarios](#scenarios)
+      - [Normal operation](#normal-operation)
+      - [Failed sync](#failed-sync)
+      - [External changes](#external-changes)
     - [Snapshot Update Strategy](#snapshot-update-strategy)
   - [Execution Flow](#execution-flow)
   - [Logging](#logging)
@@ -66,6 +68,8 @@ The setup script will validate PowerShell version and rclone installation, downl
 2. Install **rclone** and add to PATH
 3. Configure a remote: `rclone config`
 4. Edit `backup-jobs.json` (see [Configuration](#configuration))
+
+> Substitute example paths, remotes, and intervals with your own values.
 
 ### First Run
 
@@ -165,7 +169,7 @@ Jobs are defined in `backup-jobs.json`. Use the helper tool or edit manually.
 #### Settings
 
 | Field | Type | Default | Description |
-|-------|------|---------|-------------|
+| ----- | ---- | ------- | ----------- |
 | `continueOnJobError` | boolean | `true` | Continue if a job fails |
 | `defaultOperation` | string | `sync` | `copy` or `sync` |
 | `logRetentionCount` | integer | `10` | Logs retained per job (max 10) |
@@ -192,7 +196,7 @@ Named presets for reusable rclone argument sets:
 #### Jobs
 
 | Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
+| ----- | ---- | -------- | ------- | ----------- |
 | `name` | string | Yes | — | Unique job name |
 | `source` | string | Yes | — | Local source directory |
 | `dest` | string | Yes | — | `remote:path` format |
@@ -292,21 +296,21 @@ On monitor startup, current state is compared against saved snapshots. Sync is t
 
 ### Scenarios
 
-**Normal operation**
+#### Normal operation
 
 ```text
 Session 1: Files sync → snapshot saved (status=success) → shutdown
 Session 2: Snapshot matches → SKIP SYNC
 ```
 
-**Failed sync**
+#### Failed sync
 
 ```text
 Session 1: Sync fails → snapshot saved (status=failed) → shutdown
 Session 2: status=failed → FORCE SYNC
 ```
 
-**External changes**
+#### External changes
 
 ```text
 Session 1: Snapshot saved (hash=ABC123) → shutdown
@@ -317,7 +321,7 @@ Session 2: Current hash=XYZ789 ≠ ABC123 → FORCE SYNC
 ### Snapshot Update Strategy
 
 | Trigger | Save? | Status | Purpose |
-|---------|-------|--------|---------|
+| ------- | ----- | ------ | ------- |
 | Monitor starts | ✅ | `null` | Initial baseline |
 | Job succeeds | ✅ | `success` | Mark as synced |
 | Job fails | ✅ | `failed` | Flag for retry |
@@ -341,7 +345,7 @@ Session 2: Current hash=XYZ789 ≠ ABC123 → FORCE SYNC
 ## Logging
 
 | File | Purpose |
-|------|---------|
+| ---- | ------- |
 | `runner.log` | Lifecycle events, monitor activity, resource telemetry, job results |
 | `runner-error.log` | Runtime errors and warnings |
 | `<job-name>/<timestamp>.log` | Raw rclone output per job run |
@@ -386,7 +390,7 @@ To add new jobs, edit `backup-jobs.json`. The running monitor picks them up with
 ## CLI Reference
 
 | Task | Command |
-|------|---------|
+| ---- | ------- |
 | Dry run (no transfer) | `.\Launch-Runner.ps1 -Mode dryrun` |
 | Run eligible jobs | `.\Launch-Runner.ps1 -Mode run` |
 | Force all jobs | `.\Launch-Runner.ps1 -Mode run -Force` |
@@ -397,7 +401,7 @@ To add new jobs, edit `backup-jobs.json`. The running monitor picks them up with
 ### Exit Codes
 
 | Code | Meaning |
-|------|---------|
+| ---- | ------- |
 | `0` | Success |
 | `1` | Runtime failure |
 | `2` | Configuration/validation failure |
@@ -421,7 +425,7 @@ Coverage: config parsing/validation · dry-run and logging · mutex safety · ch
 ## Troubleshooting
 
 | Issue | Check | Fix |
-|-------|-------|-----|
+| ----- | ----- | --- |
 | Internet check fails | ICMP to 8.8.8.8 blocked? | Allow ping in firewall |
 | Monitor not triggering | Source paths exist? `-Mode monitor` set? | Confirm paths in `logs/runner.log` |
 | Frequent rate limits | `--transfers`/`--checkers` too high? | Lower values in profile |
