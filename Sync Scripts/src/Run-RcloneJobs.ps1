@@ -355,36 +355,6 @@ try { [console]::Beep(1200, 220) } catch { }
     }
 }
 
-function Recover-StaleMutexLock {
-    param(
-        [Parameter(Mandatory = $true)][System.Threading.Mutex]$Mutex,
-        [Parameter(Mandatory = $true)][string]$MutexName,
-        [Parameter(Mandatory = $true)][string]$LogDir
-    )
-
-    <#
-    .SYNOPSIS
-    Attempts to recover from a stale mutex lock left by a crashed previous instance.
-    Task Scheduler forcefully terminates the monitor, so mutex may be left locked.
-    #>
-    
-    try {
-        # If mutex is already owned by another process (locked), we can't acquire it immediately
-        # Try to detect if it's stale and force recovery
-        $msg = "Detected stale mutex lock (previous instance may have crashed). Attempting recovery..."
-        Write-Host "[WARN] $msg" -ForegroundColor Yellow
-        Write-RunnerLog -LogDir $LogDir -Message $msg
-        
-        # For named mutexes, we can't force release - the OS will auto-cleanup when process dies
-        # However, in rare cases where process hung without cleanup, we log and continue
-        return $false  # Unable to force recovery; caller should exit and retry
-    }
-    catch {
-        Write-RunnerLog -LogDir $LogDir -Message "Error during mutex recovery attempt: $_"
-        return $false
-    }
-}
-
 function Wait-ForInternetConnectivity {
     param(
         [Parameter(Mandatory = $true)][string]$LogDir,
@@ -772,7 +742,7 @@ function Get-FolderSnapshotSignature {
     try {
         # Use only top-level items for faster comparison (low CPU/memory)
         $items = @(Get-ChildItem -LiteralPath $FolderPath -Force -ErrorAction Stop | 
-            Select-Object -Property Name, LastWriteTimeUtc | 
+            Select-Object -Property Name, @{ Name = 'LastWriteTicks'; Expression = { $_.LastWriteTimeUtc.Ticks } } | 
             Sort-Object -Property Name)
 
         if ($items.Count -eq 0) {
@@ -782,7 +752,7 @@ function Get-FolderSnapshotSignature {
         # Quick signature: file count + sum of timestamps + first/last filename
         # This catches 99% of changes without full hash computation
         # Use [long] to avoid integer overflow with large timestamp sums (timestamps can exceed int.MaxValue)
-        $timestampSum = [long]($items | Measure-Object -Property LastWriteTimeUtc -Sum).Sum
+        $timestampSum = [long]($items | Measure-Object -Property LastWriteTicks -Sum).Sum
         $quickSig = "$($items.Count)|$($items[0].Name)|$($items[-1].Name)|$timestampSum"
         
         # Return quick signature if it's sufficient; only compute full hash if needed
@@ -792,7 +762,7 @@ function Get-FolderSnapshotSignature {
         }
 
         # For smaller folders, compute full hash for better collision resistance
-        $signatureData = ($items | ForEach-Object { "$($_.Name)|$($_.LastWriteTimeUtc.Ticks)" }) -join '|'
+        $signatureData = ($items | ForEach-Object { "$($_.Name)|$($_.LastWriteTicks)" }) -join '|'
         $hash = [System.Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($signatureData))
         return [System.BitConverter]::ToString($hash) -replace '-', ''
     }
@@ -1114,16 +1084,31 @@ function Save-FolderSnapshots {
         
         $stateFile = Join-Path $stateDir 'folder-snapshots.json'
         $now = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        $existingSnapshots = Get-FolderSnapshots -ProjectRoot $ProjectRoot -LogDir $LogDir
         
         # Build clean JSON object using PSCustomObject for better serialization
         $folderSnapshots = @{}
         foreach ($folder in $FolderState.Keys) {
-            $lastSyncStatus = if ($SyncStatus.ContainsKey($folder)) { $SyncStatus[$folder] } else { $null }
-            $lastSyncTime = if ($lastSyncStatus -eq 'success') { $now } else { $null }
+            $existingData = if ($existingSnapshots.ContainsKey($folder)) { $existingSnapshots[$folder] } else { $null }
+            $existingSyncStatus = if ($null -ne $existingData -and $existingData.PSObject.Properties.Name -contains 'lastSyncStatus') { $existingData.lastSyncStatus } else { $null }
+            $existingLastSuccessfulSync = if ($null -ne $existingData -and $existingData.PSObject.Properties.Name -contains 'lastSuccessfulSync') { $existingData.lastSuccessfulSync } else { $null }
+
+            if ($SyncStatus.ContainsKey($folder)) {
+                $lastSyncStatus = $SyncStatus[$folder]
+                # Only advance lastSuccessfulSync on a new success; otherwise preserve previous success timestamp.
+                $lastSyncTime = if ($lastSyncStatus -eq 'success') { $now } else { $existingLastSuccessfulSync }
+            }
+            else {
+                # Preserve previous status/timestamps when this save cycle has no new job result for this folder.
+                $lastSyncStatus = $existingSyncStatus
+                $lastSyncTime = $existingLastSuccessfulSync
+            }
             $lastChangeTime = if ($null -ne $FolderState[$folder].LastChange) { $FolderState[$folder].LastChange.ToString('yyyy-MM-dd HH:mm:ss') } else { $null }
+            $rawSnapshot = [string]$FolderState[$folder].Snapshot
+            $snapshotToPersist = if ([string]::IsNullOrWhiteSpace($rawSnapshot) -or $rawSnapshot -in @('ERROR_ACCESS', 'ERROR_READ')) { '' } else { $rawSnapshot }
             
             $folderSnapshots[$folder] = [PSCustomObject]@{
-                snapshot = [string]$FolderState[$folder].Snapshot
+                snapshot = $snapshotToPersist
                 lastChange = $lastChangeTime
                 lastSyncStatus = $lastSyncStatus
                 lastSuccessfulSync = $lastSyncTime
@@ -1135,7 +1120,7 @@ function Save-FolderSnapshots {
         $rootObject = [PSCustomObject]@{
             timestamp = $now
             folders = $folderSnapshots
-        } | ConvertTo-Json -Depth 3 -Compress:$false
+        } | ConvertTo-Json -Depth 5 -Compress
         
         $rootObject | Set-Content -Path $stateFile -Force -Encoding UTF8
         Write-RunnerLog -LogDir $LogDir -Message "Snapshots saved successfully to $stateFile"
@@ -1491,7 +1476,7 @@ function Start-FolderMonitoring {
 
     # Detect changes that occurred while monitor was stopped (including previous failed syncs)
     # This ensures fresh instance starts with sync comparison
-    $changedFolders = Find-ChangedFoldersOnRestart -WatchedFolders $watchedFolders -ProjectRoot $ProjectRoot -LogDir $LogDir
+    $changedFolders = @(Find-ChangedFoldersOnRestart -WatchedFolders $watchedFolders -ProjectRoot $ProjectRoot -LogDir $LogDir)
     if ($changedFolders.Count -gt 0) {
         $msg = "Detected $($changedFolders.Count) folder(s) with changes while monitor was stopped. Will process on next idle cycle."
         Write-RunnerLog -LogDir $LogDir -Message $msg
@@ -1528,18 +1513,43 @@ function Start-FolderMonitoring {
     # ===================================================================
     # Save snapshots on: (1) after first accessible check, (2) after job success, (3) 15-min fallback
     # This balances reliable change detection with minimal I/O
-    # Don't save empty/error snapshots - wait until folders are accessible
+    # Don't rewrite snapshot file on startup when nothing changed.
     # ===================================================================
-    $lastSuccessfulSnapshotTime = Get-Date
-    $snapshotIntervalSeconds = 900  # 15 minutes as fallback
     $folderSyncStatus = @{}  # Track sync status per folder (success|failed|$null)
     
-    # Only save initial snapshot if all folders have valid hashes (not empty or ERROR_*)
-    $hasValidSnapshots = $folderState.Values | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Snapshot) -and $_.Snapshot -notmatch 'ERROR_' }
+    # Save startup snapshot only when needed:
+    # - first run (no saved snapshots)
+    # - restart changes were detected
+    # - saved snapshots need repair (missing/invalid entries)
+    $hasValidSnapshots = @($folderState.Values | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Snapshot) -and $_.Snapshot -notmatch 'ERROR_' }).Count -gt 0
     if ($hasValidSnapshots) {
-        Save-FolderSnapshots -FolderState $folderState -ProjectRoot $ProjectRoot -LogDir $LogDir -SyncStatus $folderSyncStatus
-        Write-RunnerLog -LogDir $LogDir -Message "Initial snapshot saved on startup for change detection on next restart"
-    } else {
+        $savedSnapshots = Get-FolderSnapshots -ProjectRoot $ProjectRoot -LogDir $LogDir
+        $hasSavedSnapshots = $savedSnapshots.Count -gt 0
+        $needsSnapshotRepair = $false
+
+        foreach ($folder in $folderState.Keys) {
+            if (-not $savedSnapshots.ContainsKey($folder)) {
+                $needsSnapshotRepair = $true
+                break
+            }
+
+            $savedSnapshot = [string]$savedSnapshots[$folder].snapshot
+            if ([string]::IsNullOrWhiteSpace($savedSnapshot) -or $savedSnapshot -in @('ERROR_ACCESS', 'ERROR_READ')) {
+                $needsSnapshotRepair = $true
+                break
+            }
+        }
+
+        $shouldSaveInitialSnapshot = (-not $hasSavedSnapshots) -or ($changedFolders.Count -gt 0) -or $needsSnapshotRepair
+        if ($shouldSaveInitialSnapshot) {
+            Save-FolderSnapshots -FolderState $folderState -ProjectRoot $ProjectRoot -LogDir $LogDir -SyncStatus $folderSyncStatus
+            Write-RunnerLog -LogDir $LogDir -Message "Initial snapshot saved on startup for change detection on next restart"
+        }
+        else {
+            Write-RunnerLog -LogDir $LogDir -Message "No startup snapshot write: no restart changes detected and existing snapshots are valid"
+        }
+    }
+    else {
         Write-RunnerLog -LogDir $LogDir -Message "Deferring initial snapshot save: waiting for all folders to become accessible"
     }
 
@@ -1557,7 +1567,6 @@ function Start-FolderMonitoring {
                 $hasValidSnapshots = $folderState.Values | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Snapshot) -and $_.Snapshot -notmatch 'ERROR_' } | Measure-Object | Select-Object -ExpandProperty Count
                 if ($hasValidSnapshots -gt 0) {
                     Save-FolderSnapshots -FolderState $folderState -ProjectRoot $ProjectRoot -LogDir $LogDir -SyncStatus $folderSyncStatus
-                    $lastSuccessfulSnapshotTime = $now
                     Write-RunnerLog -LogDir $LogDir -Message "Snapshot saved (periodic 15-minute interval, valid snapshots: $hasValidSnapshots)"
                 }
                 
@@ -1830,18 +1839,19 @@ function Start-FolderMonitoring {
                     if (-not $state.PendingChange) {
                         continue
                     }
+                    # Never persist ERROR_* as the snapshot baseline.
+                    $currentSnapshot = $state.Snapshot
                 }
                 
                 if ($currentSnapshot -ne $state.Snapshot) {
                     $state.Snapshot = $currentSnapshot
-                    if ($null -eq $watcherEvent) {
-                        $state.LastChange = $now
-                        $state.PendingChange = $true
+                    $state.LastChange = $now
+                    $state.PendingChange = $true
 
-                        $msg = "Change detected in folder: $folder [snapshot-diff]"
-                        Write-RunnerLog -LogDir $LogDir -Message $msg
-                        Write-ShellMessage -Message $msg -IsSilent $IsSilent
-                    }
+                    $changeSource = if ($null -eq $watcherEvent) { 'snapshot-poll' } else { 'watcher-confirmed' }
+                    $msg = "Change detected in folder: $folder [snapshot-diff] ($changeSource)"
+                    Write-RunnerLog -LogDir $LogDir -Message $msg
+                    Write-ShellMessage -Message $msg -IsSilent $IsSilent
                 }
 
                 if (-not $state.PendingChange) {
@@ -1994,20 +2004,17 @@ function Start-FolderMonitoring {
                         Write-RunnerLog -LogDir $LogDir -Message $resultMsg
                         if ($jobResult -ne 'success') {
                             Write-RunnerErrorLog -LogDir $LogDir -Message $resultMsg
-                            # Mark folder as failed sync for restart detection
-                            foreach ($j in $jobs) {
-                                $folderSyncStatus[$j] = 'failed'
-                            }
+                            # Track sync status by folder path (not job name).
+                            $folderSyncStatus[$folder] = 'failed'
                         } else {
                             # Save snapshot after successful job execution
                             # This ensures change detection works reliably on restart
                             # Critical for Task Scheduler's forceful termination scenario
                             # Track sync success status per folder for restart detection
-                            foreach ($j in $jobs) {
-                                $folderSyncStatus[$j] = 'success'
+                            if (-not $folderSyncStatus.ContainsKey($folder) -or $folderSyncStatus[$folder] -ne 'failed') {
+                                $folderSyncStatus[$folder] = 'success'
                             }
                             Save-FolderSnapshots -FolderState $folderState -ProjectRoot $ProjectRoot -LogDir $LogDir -SyncStatus $folderSyncStatus
-                            $lastSuccessfulSnapshotTime = Get-Date
                             Write-RunnerLog -LogDir $LogDir -Message "Snapshot saved after successful job execution (folder marked as synced)"
                         }
 
@@ -2029,6 +2036,15 @@ function Start-FolderMonitoring {
         
         foreach ($folderPath in @($watchers.Keys)) {
             Remove-FolderWatcher -FolderPath $folderPath -Watchers $watchers -LogDir $LogDir
+        }
+
+        # Dispose monitor-scoped lock only in the scope that created it.
+        try {
+            if ($null -ne $watcherSync -and $watcherSync.ContainsKey('ProcessingFilesLock') -and $null -ne $watcherSync.ProcessingFilesLock) {
+                $watcherSync.ProcessingFilesLock.Dispose()
+            }
+        }
+        catch {
         }
 
         $msg = "Folder monitoring stopped. Final snapshots saved for change detection on next start."
@@ -2364,6 +2380,5 @@ finally {
         try { $mutex.Dispose() } catch { }
     }
     
-    # Dispose ReaderWriterLockSlim if it was created
-    try { $watcherSync.ProcessingFilesLock.Dispose() } catch { }
+    # Do not dispose monitor-scoped locks here; nested job invocations can run this finally.
 }
