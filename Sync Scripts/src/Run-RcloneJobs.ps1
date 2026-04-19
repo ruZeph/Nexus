@@ -1297,7 +1297,8 @@ function Test-PreflightRequirements {
                 if (-not $remoteNames.ContainsKey($remoteName)) {
                     # Test remote connectivity with lsf command (lists files, minimal output)
                     try {
-                        $testOutput = & $rcloneExe lsf "$remoteName:" --max-depth 0 2>&1
+                        $remotePath = "$remoteName`:"  # Escape colon to avoid PowerShell variable reference
+                        $testOutput = & $rcloneExe lsf $remotePath --max-depth 0 2>&1
                         $lastExitCode = $LASTEXITCODE
                         
                         if ($lastExitCode -eq 0) {
