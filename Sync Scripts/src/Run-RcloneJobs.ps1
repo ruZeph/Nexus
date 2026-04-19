@@ -9,6 +9,8 @@ param(
     [switch]$Silent,
     [switch]$WaitForNetwork,
     [switch]$NotifyOnEvents,
+    [switch]$HealthCheck,
+    [int]$JobTimeoutSeconds = 0,
     [ValidateSet('copy', 'sync')][string]$Operation
 )
 
@@ -22,6 +24,44 @@ $projectDiscriminator = [System.IO.Path]::GetFileName($projectRoot)
 $mutexName = "Local\RcloneBackupRunner_${safeUserSid}_$projectDiscriminator"
 $mutex = [System.Threading.Mutex]::new($false, $mutexName)
 $ownsMutex = $false
+
+function Write-BatchedJobLog {
+    param(
+        [Parameter(Mandatory = $true)][string]$LogDir,
+        [Parameter(Mandatory = $true)][string[]]$Messages,
+        [switch]$IsResultLog
+    )
+
+    if ($Messages.Count -eq 0) {
+        return
+    }
+
+    $targetLog = if ($IsResultLog) { 
+        Join-Path $LogDir 'runner-results.log' 
+    } else { 
+        Join-Path $LogDir 'runner.log' 
+    }
+
+    try {
+        $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        $batchContent = @()
+        $batchContent += "[$ts] [BATCH START] $($Messages.Count) entries"
+        
+        foreach ($msg in $Messages) {
+            $batchContent += "[$ts] $msg"
+        }
+        
+        $batchContent += "[$ts] [BATCH END]"
+        
+        [System.IO.File]::AppendAllLines($targetLog, $batchContent)
+    }
+    catch {
+        # If batch logging fails, fall back to individual logging
+        foreach ($msg in $Messages) {
+            Write-RunnerLog -LogDir $LogDir -Message $msg
+        }
+    }
+}
 
 function Write-JobLog {
     param(
@@ -563,33 +603,75 @@ function Invoke-RcloneLive {
         [Parameter(Mandatory = $true)][string]$ExePath,
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [Parameter(Mandatory = $true)][string]$LogFile,
-        [bool]$IsSilent = $false
+        [bool]$IsSilent = $false,
+        [int]$TimeoutSeconds = 0
     )
 
     try {
         $ErrorActionPreference = 'Continue'
         
-        if ($IsSilent) {
-            # Silent: capture and log only (no console)
-            $output = & $ExePath $Arguments 2>&1
-            $output | ForEach-Object {
-                $line = [string]$_
-                if ($line.Trim()) { Add-Content -Path $LogFile -Value $line }
-            }
-        }
-        else {
-            # Live: stream to console and log
-            $output = & $ExePath $Arguments 2>&1
-            $output | ForEach-Object {
-                $line = [string]$_
-                if ($line.Trim()) {
-                    Write-Host $line
-                    Add-Content -Path $LogFile -Value $line
+        if ($TimeoutSeconds -le 0) {
+            # No timeout - original behavior
+            if ($IsSilent) {
+                $output = & $ExePath $Arguments 2>&1
+                $output | ForEach-Object {
+                    $line = [string]$_
+                    if ($line.Trim()) { Add-Content -Path $LogFile -Value $line }
                 }
             }
+            else {
+                $output = & $ExePath $Arguments 2>&1
+                $output | ForEach-Object {
+                    $line = [string]$_
+                    if ($line.Trim()) {
+                        Write-Host $line
+                        Add-Content -Path $LogFile -Value $line
+                    }
+                }
+            }
+            return $LASTEXITCODE
         }
-        
-        return $LASTEXITCODE
+        else {
+            # With timeout - run as job
+            $job = Start-Job -ScriptBlock {
+                param($exe, $args, $log, $silent)
+                $ErrorActionPreference = 'Continue'
+                if ($silent) {
+                    $output = & $exe $args 2>&1
+                    $output | ForEach-Object {
+                        $line = [string]$_
+                        if ($line.Trim()) { Add-Content -Path $log -Value $line }
+                    }
+                } else {
+                    $output = & $exe $args 2>&1
+                    $output | ForEach-Object {
+                        $line = [string]$_
+                        if ($line.Trim()) { Add-Content -Path $log -Value $line }
+                    }
+                }
+                return $LASTEXITCODE
+            } -ArgumentList $ExePath, $Arguments, $LogFile, $IsSilent
+
+            $completed = Wait-Job -Job $job -Timeout $TimeoutSeconds
+            
+            if ($null -eq $completed) {
+                # Job timed out
+                Stop-Job -Job $job -Force
+                Remove-Job -Job $job -Force
+                Add-Content -Path $LogFile -Value "[TIMEOUT] Job exceeded timeout of ${TimeoutSeconds}s"
+                return 124  # Standard timeout exit code
+            }
+            
+            $result = Receive-Job -Job $job
+            $exitCode = $job.ExitCode
+            Remove-Job -Job $job -Force
+            
+            if (-not $IsSilent -and $result) {
+                $result | ForEach-Object { Write-Host $_ }
+            }
+            
+            return $exitCode
+        }
     }
     catch {
         Write-Error "Rclone execution error: $_"
@@ -899,6 +981,63 @@ function Remove-FolderWatcher {
     $Watchers.Remove($FolderPath) | Out-Null
 }
 
+function Get-HealthCheckStatus {
+    param(
+        [Parameter(Mandatory = $true)][string]$ConfigPath,
+        [Parameter(Mandatory = $true)][string]$LogDir
+    )
+
+    $status = @{
+        timestamp = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+        version = '1.0'
+        status = 'healthy'
+        details = @{}
+    }
+
+    # Check if config exists and is valid
+    if (-not (Test-Path -LiteralPath $ConfigPath)) {
+        $status.status = 'unhealthy'
+        $status.details.config = 'missing'
+        return $status
+    }
+
+    try {
+        $config = Get-Content -Raw -LiteralPath $ConfigPath | ConvertFrom-Json
+        $status.details.config = 'valid'
+        $status.details.jobCount = $config.jobs.Count
+        $status.details.enabledJobs = @($config.jobs | Where-Object { $_.enabled -ne $false }).Count
+    }
+    catch {
+        $status.status = 'unhealthy'
+        $status.details.config = "invalid: $_"
+        return $status
+    }
+
+    # Check runner log health
+    $runnerLog = Join-Path $LogDir 'runner.log'
+    if (Test-Path -LiteralPath $runnerLog) {
+        $lastLine = Get-Content -LiteralPath $runnerLog -Tail 1
+        $status.details.lastLogEntry = $lastLine
+        $status.details.hasRecentActivity = $lastLine -match '\[.*\]'
+    }
+
+    # Check for heartbeat
+    $heartbeatPath = Join-Path $LogDir 'heartbeat.txt'
+    if (Test-Path -LiteralPath $heartbeatPath) {
+        $hbContent = Get-Content -LiteralPath $heartbeatPath
+        $status.details.lastHeartbeat = $hbContent
+        $status.details.hasHeartbeat = $true
+    }
+
+    # Check for stop request
+    if (Test-StopRequested -LogDir $LogDir) {
+        $status.details.stopRequested = $true
+        $status.status = 'stopping'
+    }
+
+    return $status
+}
+
 function Start-FolderMonitoring {
     param(
         [Parameter(Mandatory = $true)]$Config,
@@ -1001,6 +1140,16 @@ function Start-FolderMonitoring {
         }
         # Always add the watcher, regardless of initial access success
         Add-FolderWatcher -FolderPath $folder -Watchers $watchers -WatcherSync $watcherSync -LogDir $LogDir -IsSilent $IsSilent
+        
+        # Pre-allocate folder queue to avoid on-demand initialization latency
+        try {
+            if (-not $watcherSync.FileJobQueues.ContainsKey($folder)) {
+                $watcherSync.FileJobQueues[$folder] = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
+            }
+        }
+        catch {
+            Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to pre-allocate queue for folder '$folder': $_"
+        }
     }
 
     $msg = "Folder monitoring started. Watching $($watchedFolders.Count) folder(s) with ${IdleTimeSeconds}s idle time."
@@ -1508,6 +1657,14 @@ try {
     }
     catch {
         throw "Config file is not valid JSON: $ConfigPath"
+    }
+
+    # Check if HealthCheck mode is enabled
+    if ($HealthCheck) {
+        $healthStatus = Get-HealthCheckStatus -ConfigPath $ConfigPath -LogDir $logDir
+        $jsonOutput = $healthStatus | ConvertTo-Json
+        Write-Host $jsonOutput
+        exit 0
     }
 
     # Check if Monitor mode is enabled
