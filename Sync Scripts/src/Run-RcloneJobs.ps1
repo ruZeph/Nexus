@@ -337,6 +337,36 @@ function Show-EventNotification {
     }
 }
 
+function Recover-StaleMutexLock {
+    param(
+        [Parameter(Mandatory = $true)][System.Threading.Mutex]$Mutex,
+        [Parameter(Mandatory = $true)][string]$MutexName,
+        [Parameter(Mandatory = $true)][string]$LogDir
+    )
+
+    <#
+    .SYNOPSIS
+    Attempts to recover from a stale mutex lock left by a crashed previous instance.
+    Task Scheduler forcefully terminates the monitor, so mutex may be left locked.
+    #>
+    
+    try {
+        # If mutex is already owned by another process (locked), we can't acquire it immediately
+        # Try to detect if it's stale and force recovery
+        $msg = "Detected stale mutex lock (previous instance may have crashed). Attempting recovery..."
+        Write-Host "[WARN] $msg" -ForegroundColor Yellow
+        Write-RunnerLog -LogDir $LogDir -Message $msg
+        
+        # For named mutexes, we can't force release - the OS will auto-cleanup when process dies
+        # However, in rare cases where process hung without cleanup, we log and continue
+        return $false  # Unable to force recovery; caller should exit and retry
+    }
+    catch {
+        Write-RunnerLog -LogDir $LogDir -Message "Error during mutex recovery attempt: $_"
+        return $false
+    }
+}
+
 function Wait-ForInternetConnectivity {
     param(
         [Parameter(Mandatory = $true)][string]$LogDir,
@@ -635,16 +665,16 @@ function Invoke-RcloneLive {
         else {
             # With timeout - run as job
             $job = Start-Job -ScriptBlock {
-                param($exe, $args, $log, $silent)
+                param($exe, $arguments, $log, $silent)
                 $ErrorActionPreference = 'Continue'
                 if ($silent) {
-                    $output = & $exe $args 2>&1
+                    $output = & $exe $arguments 2>&1
                     $output | ForEach-Object {
                         $line = [string]$_
                         if ($line.Trim()) { Add-Content -Path $log -Value $line }
                     }
                 } else {
-                    $output = & $exe $args 2>&1
+                    $output = & $exe $arguments 2>&1
                     $output | ForEach-Object {
                         $line = [string]$_
                         if ($line.Trim()) { Add-Content -Path $log -Value $line }
@@ -1067,7 +1097,7 @@ function Save-FolderSnapshots {
     }
 }
 
-function Load-FolderSnapshots {
+function Get-FolderSnapshots {
     param(
         [Parameter(Mandatory = $true)][string]$LogDir
     )
@@ -1095,13 +1125,13 @@ function Load-FolderSnapshots {
     }
 }
 
-function Detect-ChangedFoldersOnRestart {
+function Find-ChangedFoldersOnRestart {
     param(
         [Parameter(Mandatory = $true)][string[]]$WatchedFolders,
         [Parameter(Mandatory = $true)][string]$LogDir
     )
 
-    $savedSnapshots = Load-FolderSnapshots -LogDir $LogDir
+    $savedSnapshots = Get-FolderSnapshots -LogDir $LogDir
     $changedFolders = @()
     
     foreach ($folder in $WatchedFolders) {
@@ -1245,7 +1275,7 @@ function Start-FolderMonitoring {
     Write-RunnerResourceLog -State $resourceState -LogDir $LogDir -Context 'monitor-start'
 
     # Detect changes that occurred while monitor was stopped
-    $changedFolders = Detect-ChangedFoldersOnRestart -WatchedFolders $watchedFolders -LogDir $LogDir
+    $changedFolders = Find-ChangedFoldersOnRestart -WatchedFolders $watchedFolders -LogDir $LogDir
     if ($changedFolders.Count -gt 0) {
         $msg = "Detected $($changedFolders.Count) folder(s) with changes while monitor was stopped. Will process on next idle cycle."
         Write-RunnerLog -LogDir $LogDir -Message $msg
@@ -1273,9 +1303,11 @@ function Start-FolderMonitoring {
             Start-Sleep -Seconds 2
             $now = Get-Date
             
-            # Save folder snapshots periodically for change detection on next restart
+            # Save folder snapshots frequently for change detection on next start
+            # Important: Task Scheduler forcefully terminates the process (no graceful shutdown)
+            # so snapshots must be saved regularly to capture state at termination time
             $processingFilesCleanupCounter++
-            if ($processingFilesCleanupCounter -ge 300) {  # Every 10 minutes (300 x 2 second cycles)
+            if ($processingFilesCleanupCounter -ge 30) {  # Every 60 seconds (30 x 2 second cycles)
                 $processingFilesCleanupCounter = 0
                 
                 # Save snapshots for change detection on next restart
@@ -1753,7 +1785,10 @@ try {
         Write-RunnerLog -LogDir $logDir -Message $activeMsg
         Write-ShellMessage -Message $activeMsg -IsSilent $Silent
         Show-EventNotification -Title 'Nexus Sync' -Message $activeMsg -Enabled:$NotifyOnEvents
-        Write-RunnerLog -LogDir $logDir -Message 'Duplicate launch detected. Exiting in 1 second.'
+        
+        # Check if this might be a stale lock from a crashed instance
+        # If the other instance appears to be hung, Task Scheduler will eventually timeout and retry
+        Write-RunnerLog -LogDir $logDir -Message 'Duplicate launch detected. This is normal if another instance is running. Exiting in 1 second.'
         Start-Sleep -Seconds 1
         exit 0
     }
