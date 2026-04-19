@@ -935,7 +935,7 @@ function Start-FolderMonitoring {
 
     try {
         while ($true) {
-            Start-Sleep -Seconds 5
+            Start-Sleep -Seconds 2
             $now = Get-Date
 
             if (Test-StopRequested -LogDir $LogDir) {
@@ -1047,39 +1047,53 @@ function Start-FolderMonitoring {
                 $state.ErrorCount = 0
 
                 if ($watcherSync.ChangedFolders.ContainsKey($folder)) {
-                    # Process all queued events for this folder
+                    # Process queued events for this folder (up to 5 per cycle for efficiency)
                     $eventQueue = $watcherSync.EventQueue[$folder]
                     if ($null -ne $eventQueue -and $eventQueue.Count -gt 0) {
-                        # Log first event, but mark that we have pending changes
-                        $watcherEvent = $eventQueue.Dequeue()
-                        $state.LastChange = $now
-                        $state.PendingChange = $true
+                        $eventsProcessed = 0
+                        $maxEventsPerCycle = 5
+                        $queueCountBefore = $eventQueue.Count
                         
-                        # Clear the changed folder flag and process remaining events
+                        while ($eventQueue.Count -gt 0 -and $eventsProcessed -lt $maxEventsPerCycle) {
+                            # Dequeue and process event
+                            $watcherEvent = $eventQueue.Dequeue()
+                            $eventsProcessed++
+                            $state.LastChange = $now
+                            $state.PendingChange = $true
+                            
+                            $changeType = [string](Get-ConfigProperty -Object $watcherEvent -Name 'ChangeType')
+                            $fullPath = [string](Get-ConfigProperty -Object $watcherEvent -Name 'FullPath')
+                            $oldFullPath = [string](Get-ConfigProperty -Object $watcherEvent -Name 'OldFullPath')
+
+                            if ([string]::IsNullOrWhiteSpace($changeType)) { $changeType = 'Changed' }
+                            if ([string]::IsNullOrWhiteSpace($fullPath)) { $fullPath = $folder }
+
+                            if ($changeType -eq 'Renamed' -and -not [string]::IsNullOrWhiteSpace($oldFullPath)) {
+                                $msg = "Change detected by watcher: $folder [$changeType] $oldFullPath -> $fullPath"
+                            } else {
+                                $msg = "Change detected by watcher: $folder [$changeType] $fullPath"
+                            }
+                            
+                            # Append remaining queue count for batch processing
+                            if ($eventsProcessed -eq 1 -and $eventQueue.Count -gt 0) {
+                                $msg += " (batch: $eventsProcessed/$maxEventsPerCycle, $($eventQueue.Count) remaining)"
+                            } elseif ($eventsProcessed -gt 1) {
+                                $msg += " (event $eventsProcessed of batch)"
+                            }
+                            
+                            Write-RunnerLog -LogDir $LogDir -Message $msg
+                            Write-ShellMessage -Message $msg -IsSilent $IsSilent
+                        }
+                        
+                        # Clear the changed folder flag when queue is empty
                         if ($eventQueue.Count -eq 0) {
                             $watcherSync.ChangedFolders.Remove($folder) | Out-Null
                         }
-
-                        $changeType = [string](Get-ConfigProperty -Object $watcherEvent -Name 'ChangeType')
-                        $fullPath = [string](Get-ConfigProperty -Object $watcherEvent -Name 'FullPath')
-                        $oldFullPath = [string](Get-ConfigProperty -Object $watcherEvent -Name 'OldFullPath')
-
-                        if ([string]::IsNullOrWhiteSpace($changeType)) { $changeType = 'Changed' }
-                        if ([string]::IsNullOrWhiteSpace($fullPath)) { $fullPath = $folder }
-
-                        if ($changeType -eq 'Renamed' -and -not [string]::IsNullOrWhiteSpace($oldFullPath)) {
-                            $msg = "Change detected by watcher: $folder [$changeType] $oldFullPath -> $fullPath"
-                        } else {
-                            $msg = "Change detected by watcher: $folder [$changeType] $fullPath"
-                        }
                         
-                        # Append queued event count if multiple changes
-                        if ($eventQueue.Count -gt 0) {
-                            $msg += " (+$($eventQueue.Count) more events queued)"
+                        # Log queue depth if it was large (helps monitor performance)
+                        if ($queueCountBefore -ge 10) {
+                            Write-RunnerLog -LogDir $LogDir -Message "Queue monitoring: $folder - started: $queueCountBefore events, processed: $eventsProcessed, remaining: $($eventQueue.Count)"
                         }
-
-                        Write-RunnerLog -LogDir $LogDir -Message $msg
-                        Write-ShellMessage -Message $msg -IsSilent $IsSilent
                     }
                 }
 
