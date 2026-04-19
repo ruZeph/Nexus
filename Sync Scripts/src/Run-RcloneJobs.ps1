@@ -1298,20 +1298,37 @@ function Start-FolderMonitoring {
         }
     }
 
+    # ===================================================================
+    # SNAPSHOT PERSISTENCE STRATEGY
+    # ===================================================================
+    # Save snapshots on: (1) startup, (2) after job success, (3) 15-min fallback
+    # This balances reliable change detection with minimal I/O
+    # Task Scheduler forcefully kills process, so post-job snapshots are critical
+    # ===================================================================
+    $lastSuccessfulSnapshotTime = Get-Date
+    $snapshotIntervalSeconds = 900  # 15 minutes as fallback
+    
+    # Save initial snapshot on startup
+    Save-FolderSnapshots -FolderState $folderState -LogDir $LogDir
+    Write-RunnerLog -LogDir $LogDir -Message "Initial snapshot saved on startup for change detection on next restart"
+
     try {
         while ($true) {
             Start-Sleep -Seconds 2
             $now = Get-Date
             
-            # Save folder snapshots frequently for change detection on next start
-            # Important: Task Scheduler forcefully terminates the process (no graceful shutdown)
-            # so snapshots must be saved regularly to capture state at termination time
+            # Periodically check for memory leaks and 15-minute snapshot fallback
             $processingFilesCleanupCounter++
-            if ($processingFilesCleanupCounter -ge 30) {  # Every 60 seconds (30 x 2 second cycles)
+            if ($processingFilesCleanupCounter -ge 450) {  # Every 900 seconds = 15 minutes (450 x 2 second cycles)
                 $processingFilesCleanupCounter = 0
                 
-                # Save snapshots for change detection on next restart
-                Save-FolderSnapshots -FolderState $folderState -LogDir $LogDir
+                # 15-minute fallback: Save snapshots if no job success in last 15 minutes
+                $timeSinceLastSnapshot = ($now - $lastSuccessfulSnapshotTime).TotalSeconds
+                if ($timeSinceLastSnapshot -ge $snapshotIntervalSeconds) {
+                    Save-FolderSnapshots -FolderState $folderState -LogDir $LogDir
+                    $lastSuccessfulSnapshotTime = $now
+                    Write-RunnerLog -LogDir $LogDir -Message "Snapshot saved (15-minute fallback interval)"
+                }
                 
                 $watcherSync.ProcessingFilesLock.EnterReadLock()
                 try {
@@ -1326,6 +1343,11 @@ function Start-FolderMonitoring {
             if (Test-StopRequested -LogDir $LogDir) {
                 $stopMessage = Read-StopRequestMessage -LogDir $LogDir
                 Write-RunnerLog -LogDir $LogDir -Message "Stop request detected. Exiting monitor loop gracefully. Reason: $stopMessage"
+                
+                # Save final snapshot before graceful shutdown
+                Save-FolderSnapshots -FolderState $folderState -LogDir $LogDir
+                Write-RunnerLog -LogDir $LogDir -Message "Final snapshot saved on graceful shutdown"
+                
                 Clear-StopRequest -LogDir $LogDir
                 return
             }
@@ -1736,6 +1758,13 @@ function Start-FolderMonitoring {
                         Write-RunnerLog -LogDir $LogDir -Message $resultMsg
                         if ($jobResult -ne 'success') {
                             Write-RunnerErrorLog -LogDir $LogDir -Message $resultMsg
+                        } else {
+                            # Save snapshot after successful job execution
+                            # This ensures change detection works reliably on restart
+                            # Critical for Task Scheduler's forceful termination scenario
+                            Save-FolderSnapshots -FolderState $folderState -LogDir $LogDir
+                            $lastSuccessfulSnapshotTime = Get-Date
+                            Write-RunnerLog -LogDir $LogDir -Message "Snapshot saved after successful job execution"
                         }
 
                         # Clean up job execution marker
