@@ -1022,17 +1022,19 @@ function Start-FolderMonitoring {
                 try {
                     $currentModTime = (Get-Item -LiteralPath $ConfigPath -ErrorAction SilentlyContinue).LastWriteTime
                     if ($null -ne $currentModTime -and $currentModTime -gt $lastConfigModTime) {
-                        $lastConfigModTime = $currentModTime
-                        
+                        $tempConfig = $null
                         # Validate JSON before applying
                         try {
-                            $newConfig = Get-Content -Raw -LiteralPath $ConfigPath -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                            $tempConfig = Get-Content -Raw -LiteralPath $ConfigPath -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
                         }
                         catch {
-                            Write-RunnerLog -LogDir $LogDir -Message "CRITICAL: Config file has invalid JSON format: $_. Continuing with current config. Please fix $ConfigPath"
+                            Write-RunnerLog -LogDir $LogDir -Message "CRITICAL: Config file could not be read or has invalid JSON format: $_. Continuing with current config. Will retry on next change."
                             Write-RunnerErrorLog -LogDir $LogDir -Message "Config reload failed: $_"
                             continue
                         }
+                        
+                        $lastConfigModTime = $currentModTime
+                        $newConfig = $tempConfig
                         
                         # Validate config has required sections
                         if ($null -eq $newConfig -or $null -eq $newConfig.jobs) {
@@ -1116,7 +1118,7 @@ function Start-FolderMonitoring {
                     $eventQueue = $watcherSync.EventQueue[$folder]
                     if ($null -ne $eventQueue -and $eventQueue.Count -gt 0) {
                         $eventsProcessed = 0
-                        $maxEventsPerCycle = 5
+                        $maxEventsPerCycle = 1000
                         $queueCountBefore = $eventQueue.Count
                         
                         while ($eventQueue.Count -gt 0 -and $eventsProcessed -lt $maxEventsPerCycle) {
@@ -1263,69 +1265,60 @@ function Start-FolderMonitoring {
                     $folderQueue = $watcherSync.FileJobQueues[$folder]
                 }
 
+                # Optimisation: Batch file job executions by jobName to prevent N full-folder syncs
+                $batchedFileJobs = @{}
                 while ($null -ne $folderQueue -and $folderQueue.Count -gt 0) {
                     $fileJob = $folderQueue.Dequeue()
                     if ($null -eq $fileJob) { break }
                     
                     $jobName = $fileJob.JobName
-                    $filePath = $fileJob.FilePath
-                    
-                    # Validate job name
                     if ([string]::IsNullOrWhiteSpace($jobName) -or $jobName -match '[<>:"|?*\\]') {
-                        Write-RunnerLog -LogDir $LogDir -Message "Warning: Invalid job name in file job: $jobName"
-                        
-                        # Remove from processing set
                         $watcherSync.ProcessingFilesLock.EnterWriteLock()
-                        try {
-                            $watcherSync.ProcessingFiles.Remove($filePath) | Out-Null
-                        }
-                        finally {
-                            $watcherSync.ProcessingFilesLock.ExitWriteLock()
-                        }
+                        try { $watcherSync.ProcessingFiles.Remove($fileJob.FilePath) | Out-Null }
+                        finally { $watcherSync.ProcessingFilesLock.ExitWriteLock() }
                         continue
                     }
+                    if ($null -eq $batchedFileJobs[$jobName]) { $batchedFileJobs[$jobName] = @() }
+                    $batchedFileJobs[$jobName] += $fileJob
+                }
+
+                foreach ($jobName in $batchedFileJobs.Keys) {
+                    $fileJobs = $batchedFileJobs[$jobName]
+                    Write-RunnerLog -LogDir $LogDir -Message "Processing $($fileJobs.Count) file jobs for $jobName (idle-triggered)"
                     
-                    Write-RunnerLog -LogDir $LogDir -Message "Processing file job: $filePath for $jobName (idle-triggered)"
-                    $jobsProcessed++
-                    
-                    # Execute job
                     $jobStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
                     $jobExitCode = $null
                     $jobResult = 'unknown'
                     $jobError = ''
                     
                     try {
-                        # Run job for this specific file
                         & $PSCommandPath -JobName $jobName -ConfigPath $ConfigPath -DryRun:$DryRun -Silent:$IsSilent -WaitForNetwork:$WaitForNetwork -NotifyOnEvents:$NotifyOnEvents -ErrorAction SilentlyContinue
                         $jobExitCode = $LASTEXITCODE
-                        if ($null -eq $jobExitCode) {
-                            $jobExitCode = if ($?) { 0 } else { 1 }
-                        }
+                        if ($null -eq $jobExitCode) { $jobExitCode = if ($?) { 0 } else { 1 } }
                         $jobResult = if ($jobExitCode -eq 0) { 'success' } else { 'failed' }
                     }
                     catch {
                         $jobResult = 'error'
                         $jobExitCode = 1
                         $jobError = $_.Exception.Message
-                        Write-RunnerLog -LogDir $LogDir -Message "Error executing file job for '$filePath': $_"
-                        Write-RunnerErrorLog -LogDir $LogDir -Message "Error executing file job for '$filePath': $_"
+                        Write-RunnerLog -LogDir $LogDir -Message "Error batch-executing file jobs for '$jobName': $_"
+                        Write-RunnerErrorLog -LogDir $LogDir -Message "Error batch-executing file jobs for '$jobName': $_"
                     }
                     finally {
                         $jobStopwatch.Stop()
-                        $jobDurationSec = [math]::Round($jobStopwatch.Elapsed.TotalSeconds, 2)
-                        $resultMsg = "[FILE JOB RESULT] name=$jobName filepath=$filePath result=$jobResult exitcode=$jobExitCode duration_sec=$jobDurationSec"
-                        if (-not [string]::IsNullOrWhiteSpace($jobError)) {
-                            $resultMsg = "$resultMsg error=$jobError"
-                        }
-                        Write-RunnerLog -LogDir $LogDir -Message $resultMsg
+                        $avgDurationSec = [math]::Round($jobStopwatch.Elapsed.TotalSeconds / $fileJobs.Count, 2)
                         
-                        # Remove from processing set (allow re-queueing if changed again)
-                        $watcherSync.ProcessingFilesLock.EnterWriteLock()
-                        try {
-                            $watcherSync.ProcessingFiles.Remove($filePath) | Out-Null
-                        }
-                        finally {
-                            $watcherSync.ProcessingFilesLock.ExitWriteLock()
+                        foreach ($fj in $fileJobs) {
+                            $jobsProcessed++
+                            $fp = $fj.FilePath
+                            
+                            $resultMsg = "[FILE JOB RESULT] name=$jobName filepath=$fp result=$jobResult exitcode=$jobExitCode duration_sec=$avgDurationSec"
+                            if (-not [string]::IsNullOrWhiteSpace($jobError)) { $resultMsg += " error=$jobError" }
+                            Write-RunnerLog -LogDir $LogDir -Message $resultMsg
+                            
+                            $watcherSync.ProcessingFilesLock.EnterWriteLock()
+                            try { $watcherSync.ProcessingFiles.Remove($fp) | Out-Null }
+                            finally { $watcherSync.ProcessingFilesLock.ExitWriteLock() }
                         }
                     }
                 }
