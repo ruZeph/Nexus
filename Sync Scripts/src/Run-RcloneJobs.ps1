@@ -1226,6 +1226,68 @@ function Find-ChangedFoldersOnRestart {
     return $changedFolders
 }
 
+function Test-ConfigSanityForStartup {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [string]$JobName,
+        [string]$SourceFolder
+    )
+
+    if (-not $Config.jobs) {
+        throw 'No jobs found in config.'
+    }
+
+    $candidateJobs = @($Config.jobs | Where-Object { $_.enabled -ne $false })
+    if ($JobName) {
+        $candidateJobs = @($candidateJobs | Where-Object { $_.name -eq $JobName })
+    }
+    elseif ($SourceFolder) {
+        $resolvedSourceFolder = (Resolve-Path -Path $SourceFolder -ErrorAction SilentlyContinue).ProviderPath
+        if ([string]::IsNullOrWhiteSpace($resolvedSourceFolder)) {
+            throw "Source folder '$SourceFolder' not found or not accessible."
+        }
+
+        $candidateJobs = @(
+            $candidateJobs | Where-Object {
+                $jobSource = [string](Get-ConfigProperty -Object $_ -Name 'source')
+                if ([string]::IsNullOrWhiteSpace($jobSource)) { return $false }
+                $resolvedJobSource = (Resolve-Path -Path $jobSource -ErrorAction SilentlyContinue).ProviderPath
+                $resolvedSourceFolder -eq $resolvedJobSource
+            }
+        )
+    }
+
+    if ($candidateJobs.Count -eq 0) {
+        if ($JobName) {
+            throw "Job '$JobName' not found in enabled jobs."
+        }
+        elseif ($SourceFolder) {
+            throw "No enabled jobs matched source folder '$SourceFolder'."
+        }
+        else {
+            throw 'No enabled jobs found in configuration.'
+        }
+    }
+
+    foreach ($job in $candidateJobs) {
+        $name = [string](Get-ConfigProperty -Object $job -Name 'name')
+        $source = [string](Get-ConfigProperty -Object $job -Name 'source')
+        $dest = [string](Get-ConfigProperty -Object $job -Name 'dest')
+
+        if ([string]::IsNullOrWhiteSpace($name)) {
+            throw 'A job is missing a name.'
+        }
+
+        if ([string]::IsNullOrWhiteSpace($source) -or [string]::IsNullOrWhiteSpace($dest)) {
+            throw "Job '$name' is missing source or dest."
+        }
+
+        if (-not (Test-RcloneDestination -Destination $dest)) {
+            throw "Job '$name' has invalid destination '$dest'. Expected format remote:path"
+        }
+    }
+}
+
 <#
 .SYNOPSIS
 Validates critical runtime requirements before starting monitoring or jobs
@@ -1957,6 +2019,13 @@ function Start-FolderMonitoring {
                 # Log if file jobs were processed
                 if ($jobsProcessed -gt 0) {
                     Write-RunnerLog -LogDir $LogDir -Message "Processed $jobsProcessed file job(s) after reaching idle time"
+
+                    # File-level jobs already covered this folder change in this idle cycle.
+                    # Skip folder-level trigger to prevent duplicate executions.
+                    $state.PendingChange = $false
+                    $state.LastChange = $now
+                    Write-RunnerLog -LogDir $LogDir -Message "Skipping folder-level trigger for $folder because file jobs were already executed in this idle cycle"
+                    continue
                 }
 
                 $jobs = @($folderJobMap[$folder] | Select-Object -Unique)
@@ -2097,6 +2166,19 @@ try {
         exit 1
     }
 
+    if (-not (Test-Path -LiteralPath $ConfigPath)) {
+        throw "Config file not found: $ConfigPath"
+    }
+
+    try {
+        $cfg = Get-Content -Raw -LiteralPath $ConfigPath | ConvertFrom-Json
+    }
+    catch {
+        throw "Config file is not valid JSON: $ConfigPath"
+    }
+
+    Test-ConfigSanityForStartup -Config $cfg -JobName $JobName -SourceFolder $SourceFolder
+
     if (-not $mutex.WaitOne(0)) {
         $activeMsg = 'Another runner instance is already active. Exiting.'
         Write-RunnerLog -LogDir $logDir -Message $activeMsg
@@ -2116,17 +2198,6 @@ try {
         Save-RunnerLogsToArchive -LogDir $logDir
     }
     Write-RunnerSessionSeparator -LogDir $logDir
-
-    if (-not (Test-Path -LiteralPath $ConfigPath)) {
-        throw "Config file not found: $ConfigPath"
-    }
-
-    try {
-        $cfg = Get-Content -Raw -LiteralPath $ConfigPath | ConvertFrom-Json
-    }
-    catch {
-        throw "Config file is not valid JSON: $ConfigPath"
-    }
 
     # Check if HealthCheck mode is enabled
     if ($HealthCheck) {
