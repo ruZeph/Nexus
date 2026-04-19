@@ -449,8 +449,14 @@ function New-JobLogFile {
     )
 
     $jobLogDir = Join-Path $RootLogDir $JobSafeName
-    if ($PSCmdlet.ShouldProcess($jobLogDir, 'Create job log directory')) {
-        New-Item -ItemType Directory -Force -Path $jobLogDir | Out-Null
+    
+    # Create job log directory - ensure it exists without throwing errors
+    try {
+        $null = New-Item -ItemType Directory -Force -Path $jobLogDir -ErrorAction Stop | Out-Null
+    }
+    catch {
+        # If creation fails, log but don't crash - logs can still be written to root LogDir
+        Write-Host "[WARNING] Failed to create job log directory: $_" -ForegroundColor Yellow
     }
 
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -1080,7 +1086,17 @@ function Save-FolderSnapshots {
     try {
         # Snapshots stored in .state/ directory (not in logs/)
         $stateDir = Join-Path $ProjectRoot '.state'
-        $null = New-Item -ItemType Directory -Force -Path $stateDir -ErrorAction SilentlyContinue
+        
+        # Create .state directory - ensure it exists without throwing errors
+        try {
+            $null = New-Item -ItemType Directory -Force -Path $stateDir -ErrorAction Stop | Out-Null
+        }
+        catch {
+            # Log warning but don't crash - snapshot save is not critical
+            Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to create .state directory for snapshots: $_"
+            return  # Cannot save snapshots without directory
+        }
+        
         $stateFile = Join-Path $stateDir 'folder-snapshots.json'
         
         $state = @{
@@ -1836,7 +1852,16 @@ function Start-FolderMonitoring {
 
 try {
     $logDir = Join-Path $projectRoot 'logs'
-    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    
+    # Create logs directory - ensure it exists without throwing errors
+    try {
+        $null = New-Item -ItemType Directory -Force -Path $logDir -ErrorAction Stop | Out-Null
+    }
+    catch {
+        Write-Host "[ERROR] Failed to create logs directory at $logDir : $_" -ForegroundColor Red
+        Write-Host "[ERROR] Cannot proceed without logs directory. Exiting." -ForegroundColor Red
+        exit 1
+    }
 
     # Check internet connectivity first
     if ($WaitForNetwork) {
