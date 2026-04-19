@@ -1350,6 +1350,15 @@ function Start-FolderMonitoring {
         if ($folderState.ContainsKey($folder)) {
             $folderState[$folder].PendingChange = $true
             $folderState[$folder].LastChange = Get-Date
+            
+            # Recompute snapshot for changed folders if it was empty (access failed at startup)
+            # This ensures fresh hash comparison for idle-triggered execution
+            if ([string]::IsNullOrWhiteSpace($folderState[$folder].Snapshot)) {
+                $freshSnapshot = Get-FolderSnapshotSignature -FolderPath $folder
+                if ($freshSnapshot -notin @('ERROR_ACCESS', 'ERROR_READ')) {
+                    $folderState[$folder].Snapshot = $freshSnapshot
+                }
+            }
         }
     }
 
