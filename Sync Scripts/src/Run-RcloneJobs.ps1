@@ -1204,6 +1204,144 @@ function Find-ChangedFoldersOnRestart {
     return $changedFolders
 }
 
+<#
+.SYNOPSIS
+Validates critical runtime requirements before starting monitoring or jobs
+.DESCRIPTION
+Checks: rclone executable, source folders, remote paths, and remote connectivity
+Returns: $true if all validations pass; throws on critical failures
+#>
+function Test-PreflightRequirements {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)][string]$LogDir,
+        [Parameter(Mandatory = $false)][bool]$IsSilent = $false
+    )
+
+    $rcloneExe = Resolve-RcloneExe
+    $allValid = $true
+    $errorMessages = @()
+
+    # 1. Validate rclone is executable
+    try {
+        $rcloneVersion = & $rcloneExe --version 2>&1 | Select-Object -First 1
+        Write-RunnerLog -LogDir $LogDir -Message "Rclone executable verified: $rcloneVersion"
+    }
+    catch {
+        $msg = "CRITICAL: Rclone not found or not executable at '$rcloneExe'"
+        Write-RunnerLog -LogDir $LogDir -Message $msg
+        Write-ShellMessage -Message $msg -IsSilent $IsSilent -ErrorLevel 'error'
+        throw $msg
+    }
+
+    # 2. Validate source folders exist and are accessible
+    if ($Config.jobs) {
+        $jobs = @($Config.jobs | Where-Object { $_.enabled -ne $false })
+        foreach ($job in $jobs) {
+            $jobName = [string](Get-ConfigProperty -Object $job -Name 'name')
+            $source = [string](Get-ConfigProperty -Object $job -Name 'source')
+            
+            if ([string]::IsNullOrWhiteSpace($source)) {
+                $msg = "CRITICAL: Job '$jobName' has empty source path"
+                $errorMessages += $msg
+                $allValid = $false
+                continue
+            }
+
+            if (-not (Test-Path -LiteralPath $source)) {
+                $msg = "CRITICAL: Job '$jobName' source folder not found: $source"
+                Write-RunnerLog -LogDir $LogDir -Message $msg
+                Write-ShellMessage -Message $msg -IsSilent $IsSilent -ErrorLevel 'error'
+                $errorMessages += $msg
+                $allValid = $false
+                continue
+            }
+
+            try {
+                $items = @(Get-ChildItem -LiteralPath $source -ErrorAction Stop | Measure-Object | Select-Object -ExpandProperty Count)
+                Write-RunnerLog -LogDir $LogDir -Message "Job '$jobName' source validated: $source ($items items)"
+            }
+            catch {
+                $msg = "CRITICAL: Job '$jobName' source not accessible: $source - $_"
+                Write-RunnerLog -LogDir $LogDir -Message $msg
+                Write-ShellMessage -Message $msg -IsSilent $IsSilent -ErrorLevel 'error'
+                $errorMessages += $msg
+                $allValid = $false
+            }
+        }
+    }
+
+    # 3. Validate rclone remotes exist and are accessible
+    if ($Config.jobs) {
+        $jobs = @($Config.jobs | Where-Object { $_.enabled -ne $false })
+        $remoteNames = @{}
+        
+        foreach ($job in $jobs) {
+            $jobName = [string](Get-ConfigProperty -Object $job -Name 'name')
+            $dest = [string](Get-ConfigProperty -Object $job -Name 'dest')
+            
+            if ([string]::IsNullOrWhiteSpace($dest)) {
+                $msg = "CRITICAL: Job '$jobName' has empty destination path"
+                Write-RunnerLog -LogDir $LogDir -Message $msg
+                Write-ShellMessage -Message $msg -IsSilent $IsSilent -ErrorLevel 'error'
+                $errorMessages += $msg
+                $allValid = $false
+                continue
+            }
+
+            # Extract remote name (format: RemoteName:path or RemoteName:/path)
+            if ($dest -match '^([^:]+):') {
+                $remoteName = $matches[1]
+                
+                # Only test each remote once
+                if (-not $remoteNames.ContainsKey($remoteName)) {
+                    # Test remote connectivity with lsf command (lists files, minimal output)
+                    try {
+                        $testOutput = & $rcloneExe lsf "$remoteName:" --max-depth 0 2>&1
+                        $lastExitCode = $LASTEXITCODE
+                        
+                        if ($lastExitCode -eq 0) {
+                            Write-RunnerLog -LogDir $LogDir -Message "Remote '$remoteName' validated successfully"
+                            $remoteNames[$remoteName] = $true
+                        } else {
+                            $errorMsg = $testOutput -join "`n"
+                            Write-RunnerLog -LogDir $LogDir -Message "CRITICAL: Remote '$remoteName' failed: $errorMsg"
+                            Write-ShellMessage -Message "CRITICAL: Remote '$remoteName' test failed. Error: $errorMsg" -IsSilent $IsSilent -ErrorLevel 'error'
+                            $errorMessages += "Remote '$remoteName' failed: $errorMsg"
+                            $remoteNames[$remoteName] = $false
+                            $allValid = $false
+                        }
+                    }
+                    catch {
+                        $msg = "CRITICAL: Failed to test remote '$remoteName': $_"
+                        Write-RunnerLog -LogDir $LogDir -Message $msg
+                        Write-ShellMessage -Message $msg -IsSilent $IsSilent -ErrorLevel 'error'
+                        $errorMessages += $msg
+                        $remoteNames[$remoteName] = $false
+                        $allValid = $false
+                    }
+                }
+            } else {
+                # Local path in destination (valid but unusual)
+                if (-not (Test-Path -LiteralPath $dest)) {
+                    Write-RunnerLog -LogDir $LogDir -Message "Warning: Job '$jobName' destination local path not found (will be created): $dest"
+                }
+            }
+        }
+    }
+
+    if (-not $allValid) {
+        $summary = $errorMessages -join "; "
+        $msg = "CRITICAL: Preflight validation failed. Cannot proceed with jobs: $summary"
+        Write-RunnerLog -LogDir $LogDir -Message $msg
+        Write-ShellMessage -Message $msg -IsSilent $IsSilent -ErrorLevel 'error'
+        throw $msg
+    }
+
+    Write-RunnerLog -LogDir $LogDir -Message "All preflight validation checks passed"
+    return $true
+}
+
 function Start-FolderMonitoring {
     param(
         [Parameter(Mandatory = $true)]$Config,
@@ -1940,6 +2078,18 @@ try {
     # Check if Monitor mode is enabled
     if ($Monitor) {
         Write-ShellMessage -Message "Starting folder monitoring mode..." -IsSilent $Silent
+        Write-ShellMessage -Message "Running preflight validation..." -IsSilent $Silent
+        
+        try {
+            Test-PreflightRequirements -Config $cfg -LogDir $logDir -IsSilent $Silent
+        }
+        catch {
+            $msg = "Preflight validation failed: $_"
+            Write-RunnerLog -LogDir $logDir -Message $msg
+            Write-Host "[ERROR] $msg" -ForegroundColor Red
+            exit 1
+        }
+        
         Start-FolderMonitoring -Config $cfg -ProjectRoot $projectRoot -LogDir $logDir -IsSilent $Silent -ConfigPath $ConfigPath -DryRun $DryRun -IdleTimeSeconds $IdleTimeSeconds -Mutex $mutex -InitialSync $InitialSync
         exit 0
     }
@@ -2001,6 +2151,18 @@ try {
         else {
             $msg = "No enabled jobs found in configuration."
         }
+        Write-RunnerLog -LogDir $logDir -Message $msg
+        Write-Host "[ERROR] $msg" -ForegroundColor Red
+        exit 1
+    }
+
+    # Preflight validation before executing jobs
+    Write-ShellMessage -Message "Validating job configuration and remote connectivity..." -IsSilent $Silent
+    try {
+        Test-PreflightRequirements -Config $cfg -LogDir $logDir -IsSilent $Silent
+    }
+    catch {
+        $msg = "Job execution aborted - Preflight validation failed: $_"
         Write-RunnerLog -LogDir $logDir -Message $msg
         Write-Host "[ERROR] $msg" -ForegroundColor Red
         exit 1
