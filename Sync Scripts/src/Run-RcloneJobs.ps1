@@ -10,6 +10,7 @@ param(
     [switch]$WaitForNetwork,
     [switch]$NotifyOnEvents,
     [switch]$HealthCheck,
+    [switch]$InitialSync,
     [int]$JobTimeoutSeconds = 0,
     [ValidateSet('copy', 'sync')][string]$Operation
 )
@@ -1038,6 +1039,91 @@ function Get-HealthCheckStatus {
     return $status
 }
 
+function Save-FolderSnapshots {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$FolderState,
+        [Parameter(Mandatory = $true)][string]$LogDir
+    )
+
+    try {
+        $stateFile = Join-Path $LogDir 'folder-snapshots.json'
+        $state = @{
+            timestamp = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+            folders = @{}
+        }
+        
+        foreach ($folder in $FolderState.Keys) {
+            $state.folders[$folder] = @{
+                snapshot = $FolderState[$folder].Snapshot
+                lastChange = $FolderState[$folder].LastChange
+                lastSaved = Get-Date
+            }
+        }
+        
+        $state | ConvertTo-Json -Depth 10 | Set-Content -Path $stateFile -Force
+    }
+    catch {
+        Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to save folder snapshots: $_"
+    }
+}
+
+function Load-FolderSnapshots {
+    param(
+        [Parameter(Mandatory = $true)][string]$LogDir
+    )
+
+    try {
+        $stateFile = Join-Path $LogDir 'folder-snapshots.json'
+        if (-not (Test-Path -LiteralPath $stateFile)) {
+            return @{}
+        }
+        
+        $state = Get-Content -Raw -LiteralPath $stateFile | ConvertFrom-Json
+        $result = @{}
+        
+        if ($state.folders) {
+            foreach ($folder in $state.folders.PSObject.Properties.Name) {
+                $result[$folder] = $state.folders.$folder
+            }
+        }
+        
+        return $result
+    }
+    catch {
+        Write-RunnerLog -LogDir $LogDir -Message "Warning: Failed to load folder snapshots: $_"
+        return @{}
+    }
+}
+
+function Detect-ChangedFoldersOnRestart {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$WatchedFolders,
+        [Parameter(Mandatory = $true)][string]$LogDir
+    )
+
+    $savedSnapshots = Load-FolderSnapshots -LogDir $LogDir
+    $changedFolders = @()
+    
+    foreach ($folder in $WatchedFolders) {
+        if (-not $savedSnapshots.ContainsKey($folder)) {
+            # New folder, no saved snapshot
+            continue
+        }
+        
+        $currentSnapshot = Get-FolderSnapshotSignature -FolderPath $folder
+        $savedSnapshot = $savedSnapshots[$folder].snapshot
+        
+        if ($currentSnapshot -notin @('ERROR_ACCESS', 'ERROR_READ') -and $currentSnapshot -ne $savedSnapshot) {
+            $changedFolders += $folder
+            $msg = "Detected changes in folder while monitor was stopped: $folder"
+            Write-RunnerLog -LogDir $LogDir -Message $msg
+            Write-Host "[INFO] $msg" -ForegroundColor Cyan
+        }
+    }
+    
+    return $changedFolders
+}
+
 function Start-FolderMonitoring {
     param(
         [Parameter(Mandatory = $true)]$Config,
@@ -1046,7 +1132,8 @@ function Start-FolderMonitoring {
         [string]$ConfigPath = "",
         [bool]$DryRun = $false,
         [int]$IdleTimeSeconds = 60,
-        [System.Threading.Mutex]$Mutex = $null
+        [System.Threading.Mutex]$Mutex = $null,
+        [bool]$InitialSync = $false
     )
 
     # Build initial folder-to-jobs mapping
@@ -1157,16 +1244,43 @@ function Start-FolderMonitoring {
     Write-ShellMessage -Message $msg -IsSilent $IsSilent
     Write-RunnerResourceLog -State $resourceState -LogDir $LogDir -Context 'monitor-start'
 
+    # Detect changes that occurred while monitor was stopped
+    $changedFolders = Detect-ChangedFoldersOnRestart -WatchedFolders $watchedFolders -LogDir $LogDir
+    if ($changedFolders.Count -gt 0) {
+        $msg = "Detected $($changedFolders.Count) folder(s) with changes while monitor was stopped. Will process on next idle cycle."
+        Write-RunnerLog -LogDir $LogDir -Message $msg
+        Write-ShellMessage -Message $msg -IsSilent $IsSilent
+    }
+
+    # If InitialSync requested, mark all folders as changed to trigger sync jobs
+    if ($InitialSync) {
+        $changedFolders = @($watchedFolders)
+        $msg = "InitialSync enabled: Marking all $($watchedFolders.Count) folders for immediate sync"
+        Write-RunnerLog -LogDir $LogDir -Message $msg
+        Write-ShellMessage -Message $msg -IsSilent $IsSilent
+    }
+
+    # Mark changed folders to trigger job execution on next idle cycle
+    foreach ($folder in $changedFolders) {
+        if ($folderJobMap.ContainsKey($folder)) {
+            $folderState[$folder].PendingChange = $true
+            $folderState[$folder].LastChange = Get-Date
+        }
+    }
+
     try {
         while ($true) {
             Start-Sleep -Seconds 2
             $now = Get-Date
             
-            # Periodic memory safety check: Monitor ProcessingFiles HashSet growth
-            # This detects if file removal is failing (potential memory leak)
+            # Save folder snapshots periodically for change detection on next restart
             $processingFilesCleanupCounter++
             if ($processingFilesCleanupCounter -ge 300) {  # Every 10 minutes (300 x 2 second cycles)
                 $processingFilesCleanupCounter = 0
+                
+                # Save snapshots for change detection on next restart
+                Save-FolderSnapshots -FolderState $folderState -LogDir $LogDir
+                
                 $watcherSync.ProcessingFilesLock.EnterReadLock()
                 try {
                     if ($watcherSync.ProcessingFiles.Count -gt 1000) {
@@ -1605,11 +1719,14 @@ function Start-FolderMonitoring {
         }
     }
     finally {
+        # Save final snapshots before stopping
+        Save-FolderSnapshots -FolderState $folderState -LogDir $LogDir
+        
         foreach ($folderPath in @($watchers.Keys)) {
             Remove-FolderWatcher -FolderPath $folderPath -Watchers $watchers -LogDir $LogDir
         }
 
-        $msg = "Folder monitoring stopped."
+        $msg = "Folder monitoring stopped. Final snapshots saved for change detection on next start."
         Write-RunnerLog -LogDir $LogDir -Message $msg
     }
 }
@@ -1670,7 +1787,7 @@ try {
     # Check if Monitor mode is enabled
     if ($Monitor) {
         Write-ShellMessage -Message "Starting folder monitoring mode..." -IsSilent $Silent
-        Start-FolderMonitoring -Config $cfg -LogDir $logDir -IsSilent $Silent -ConfigPath $ConfigPath -DryRun $DryRun -IdleTimeSeconds $IdleTimeSeconds -Mutex $mutex
+        Start-FolderMonitoring -Config $cfg -LogDir $logDir -IsSilent $Silent -ConfigPath $ConfigPath -DryRun $DryRun -IdleTimeSeconds $IdleTimeSeconds -Mutex $mutex -InitialSync $InitialSync
         exit 0
     }
 
@@ -1888,7 +2005,9 @@ catch {
     New-Item -ItemType Directory -Force -Path $errLogDir | Out-Null
     $errLog = Join-Path $errLogDir 'runner-error.log'
     Add-Content -LiteralPath $errLog -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] ERROR: $($_.Exception.Message)"
-    throw
+    Write-Host "ERROR CAUGHT: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Exiting with code 1" -ForegroundColor Red
+    exit 1
 }
 finally {
     # Clean up threading resources
