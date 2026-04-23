@@ -14,6 +14,7 @@ $ErrorLogFile          = Join-Path $LogDir 'runner-error.log'
 $StateDir              = Join-Path $BasePath '.state'
 $StateFile             = Join-Path $StateDir 'trigger-state.json'
 $RuntimeStateFile      = Join-Path $StateDir 'runtime-state.json'
+$PlanStateFile         = Join-Path $StateDir 'plan-dispatch-state.json'   # persisted dispatch outcomes for restart detection
 $EnvFilePath           = Join-Path $BasePath '.env'
 $StopSignalFile        = Join-Path $BasePath '.stop-livebackup'
 $ToolsDir              = Join-Path $BasePath 'tools'
@@ -366,6 +367,113 @@ function Test-ShouldIgnorePath {
     if ($Path -match '(?i)[\\/](\.git|node_modules\\\.cache|\$RECYCLE\.BIN)[\\/]') { return $true }
 
     return $false
+}
+
+# ---------------------------------------------------------------------------
+# Plan dispatch-state persistence (restart-resilience / missed-change detection)
+#
+# Mirrors the RClone snapshot pattern: after each successful dispatch we write
+# a lightweight record per plan.  On the next startup we compare that record
+# against current conditions and re-trigger any plan that:
+#   (a) had a non-success LastDispatchStatus (failed / dispatched-but-unknown), or
+#   (b) is brand-new (no record at all).
+#
+# This ensures a plan that changed while the daemon was stopped (or whose
+# trigger failed mid-session) is never silently dropped.
+# ---------------------------------------------------------------------------
+
+function Save-PlanDispatchState {
+    try {
+        $records = @{}
+        foreach ($planId in @($global:PlanState.Keys | Sort-Object)) {
+            $s = $global:PlanState[$planId]
+            $records[$planId] = @{
+                Name               = $s.Name
+                LastRun            = $s.LastRun
+                LastBatchId        = $s.LastBatchId
+                LastDispatchStatus = $s.LastDispatchStatus
+                SavedAt            = (Get-Date).ToString('o')
+            }
+        }
+        Write-JsonFile -Path $PlanStateFile -Data @{ Plans = $records } -Depth 6
+    }
+    catch {
+        Write-Log "Failed to save plan dispatch state: $($_.Exception.Message)" 'WARN' 'Yellow' 'State'
+    }
+}
+
+function Get-SavedPlanDispatchState {
+    if (-not (Test-Path -LiteralPath $PlanStateFile)) { return @{} }
+    try {
+        $payload = Get-Content -LiteralPath $PlanStateFile -Raw | ConvertFrom-Json -AsHashtable
+        if ($payload.ContainsKey('Plans')) { return $payload.Plans }
+        return @{}
+    }
+    catch {
+        return @{}
+    }
+}
+
+function Find-PlansNeedingRetrigger {
+    <#
+    .SYNOPSIS
+    On startup, identify plans that should be immediately queued for re-trigger.
+
+    A plan needs a re-trigger when any of the following is true:
+      1. No dispatch record exists for it (first run, or record was cleared).
+      2. LastDispatchStatus is not 'success' (failed, dispatched-but-unknown, etc.).
+
+    Returns a list of plan IDs that should have a synthetic event injected so
+    the idle debounce fires on the next loop iteration.
+    #>
+    param([hashtable]$SavedDispatch)
+
+    $needsRetrigger = @()
+    foreach ($planId in @($global:PlanState.Keys)) {
+        $state = $global:PlanState[$planId]
+
+        if (-not $SavedDispatch.ContainsKey($planId)) {
+            Write-Log "Plan [$($state.Name)] has no prior dispatch record. Queuing for re-trigger." 'INFO' 'Cyan' $state.Name
+            $needsRetrigger += $planId
+            continue
+        }
+
+        $record = $SavedDispatch[$planId]
+        $lastStatus = [string]$record.LastDispatchStatus
+        if ($lastStatus -notin @('success', 'mocked')) {
+            Write-Log "Plan [$($state.Name)] last dispatch status was '$lastStatus'. Queuing for re-trigger." 'INFO' 'Cyan' $state.Name
+            $needsRetrigger += $planId
+        }
+    }
+    return $needsRetrigger
+}
+
+function Invoke-SyntheticRetrigger {
+    <#
+    .SYNOPSIS
+    Inject a synthetic change event so the idle debounce fires for the given plan
+    on the next loop tick without waiting for a real filesystem event.
+    #>
+    param([string]$PlanId)
+
+    $state = $global:PlanState[$planId]
+    if ($null -eq $state) { return }
+
+    # Only inject if there is no real pending batch already (don't overwrite recovered state)
+    if ([int]$state.EventCount -gt 0) { return }
+
+    $state.BatchNumber    = [int]$state.BatchNumber + 1
+    $state.CurrentBatchId = '{0}-B{1:D4}-RESTART' -f $PlanId, [int]$state.BatchNumber
+    $state.EventCount     = 1
+    $state.LastChange     = [datetime]::Now.AddSeconds(-$global:IdleTimeSeconds)  # make idle window already elapsed
+    $state.LastQueuedAt   = [datetime]::Now
+    $state.QueueLogged    = $false
+    if (-not $state.PendingEventTypes.ContainsKey('Synthetic')) {
+        $state.PendingEventTypes['Synthetic'] = 0
+    }
+    $state.PendingEventTypes['Synthetic'] = 1
+    $state.PendingPaths = @('[restart-retrigger]')
+    Set-StateDirty
 }
 
 function Get-SavedPlanState {
@@ -736,6 +844,18 @@ try {
     Save-TriggerState
     Save-RuntimeState -Status 'running' -Force
     Write-Log "[SESSION] instance=$($global:MonitorControl.InstanceId) mutex=$mutexName plans=$($global:PlanState.Count) loop_ms=$LoopSleepMilliseconds idle_s=$IdleTimeSeconds test_mode=$global:IsTestMode" 'INFO' 'DarkGray' 'System'
+
+    # --- Restart-resilience: check for plans that need re-triggering on startup ---
+    $savedDispatch = Get-SavedPlanDispatchState
+    $retriggerIds  = Find-PlansNeedingRetrigger -SavedDispatch $savedDispatch
+    foreach ($rid in $retriggerIds) {
+        Invoke-SyntheticRetrigger -PlanId $rid
+    }
+    if ($retriggerIds.Count -gt 0) {
+        Write-Log "Startup re-trigger injected for $($retriggerIds.Count) plan(s): $($retriggerIds -join ', ')" 'INFO' 'Cyan' 'System'
+    }
+    # -----------------------------------------------------------------------------
+
     Write-Log 'Waiting for idle bounds...' 'INFO' 'Green' 'System'
 
     $lastResourceLogTime = Get-Date
@@ -826,39 +946,11 @@ try {
 
             if (-not $apiSuccess) { continue }
 
-            $dispatchOutcome = [pscustomobject]@{
-                Operation = $null
-                RawStatus = 'mocked'
-                NormalizedStatus = 'mocked'
-                Outcome = 'success'
-            }
-
-            if (-not $global:IsTestMode) {
-                $dispatchOutcome = Wait-BackrestOperationObservation `
-                    -PlanId $planId `
-                    -Since $requestStartedAt `
-                    -Endpoint $BackrestEndpoint `
-                    -Headers $AuthHeader `
-                    -TimeoutSeconds 1800 `
-                    -PollIntervalSeconds 5
-
-                if ($null -ne $dispatchOutcome) {
-                    $operationId = if ($null -ne $dispatchOutcome.Operation.id) { $dispatchOutcome.Operation.id } else { 'unknown' }
-                    $flowId = if ($null -ne $dispatchOutcome.Operation.flowId) { $dispatchOutcome.Operation.flowId } else { 'unknown' }
-                    $operationStatus = if ($null -ne $dispatchOutcome.RawStatus) { $dispatchOutcome.RawStatus } else { 'unknown' }
-                    Write-Log "Backrest operation reached terminal status for batch [$batchId]. OperationId=[$operationId] FlowId=[$flowId] Status=[$operationStatus] Outcome=[$($dispatchOutcome.Outcome)]" 'SUCCESS' 'Green' $state.Name
-                }
-                else {
-                    Write-Log "Backrest accepted batch [$batchId], but no terminal operation status was observed within the wait window." 'WARN' 'Yellow' $state.Name
-                }
-            }
-            else {
-                Write-Log "Backrest terminal wait skipped in test mode for batch [$batchId]." 'TEST' 'Magenta' $state.Name
-            }
-
+            # Reset plan state immediately so the loop keeps watching for new changes.
+            # Operation observation runs in a background job — never blocking the main loop.
             $state.LastBatchId = $batchId
             $state.LastBatchEventCount = $events
-            $state.LastDispatchStatus = if ($null -eq $dispatchOutcome) { 'timeout' } elseif ($dispatchOutcome.Outcome -eq 'failed') { 'failed' } else { 'success' }
+            $state.LastDispatchStatus = 'dispatched'
             $state.LastRun = $now.ToString('o')
             $state.LastChange = $null
             $state.LastQueuedAt = $null
@@ -871,11 +963,102 @@ try {
                 $state.PendingEventTypes.Remove($key)
             }
 
-            if ($state.LastDispatchStatus -eq 'success') {
+            Set-StateDirty
+            Save-TriggerState
+            Save-RuntimeState -Status 'running'
+
+            if ($global:IsTestMode) {
+                Write-Log "Backrest terminal wait skipped in test mode for batch [$batchId]." 'TEST' 'Magenta' $state.Name
+            }
+            else {
+                # Fire-and-forget background observation — does not block the watcher loop.
+                $observeScript = {
+                    param($PlanId, $BatchId, $PlanName, $RequestStartedAt, $Endpoint, $AuthHeader,
+                          $OperationModulePath, $LogFile, $ErrorLogFile)
+
+                    function Write-ObserveLog {
+                        param([string]$Message, [string]$Level = 'INFO', [string]$Component = 'Observe')
+                        $ts   = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+                        $pid_ = $PID.ToString().PadRight(5)
+                        $line = "[$ts] [PID:$pid_] [$Level] [$Component] $Message"
+                        try { [System.IO.File]::AppendAllText($LogFile, "$line`n") } catch {}
+                        if ($Level -match '^(ERROR|WARN)$') {
+                            try { [System.IO.File]::AppendAllText($ErrorLogFile, "$line`n") } catch {}
+                        }
+                    }
+
+                    if (Test-Path -LiteralPath $OperationModulePath) {
+                        try { . $OperationModulePath } catch {}
+                    }
+
+                    Write-ObserveLog "Background observation started for batch [$BatchId]." 'INFO' $PlanName
+
+                    $outcome = $null
+                    try {
+                        $outcome = Wait-BackrestOperationFinalStatus `
+                            -OperationFetcher {
+                                param([string]$PlanId, [string]$Endpoint, [hashtable]$Headers)
+                                $uriRoot = $Endpoint -replace '/v1\.Backrest/Backup$', ''
+                                $body    = @{ selector = @{ planId = $PlanId } } | ConvertTo-Json -Compress
+                                $rp      = @{ Uri = "$uriRoot/v1.Backrest/GetOperations"; Method = 'Post'; Body = $body; ContentType = 'application/json'; TimeoutSec = 5 }
+                                if ($Headers.Count -gt 0) { $rp.Headers = $Headers }
+                                try {
+                                    $resp = Invoke-RestMethod @rp
+                                    $ops  = @($resp.operations)
+                                    if ($ops.Count -eq 0) { return $null }
+                                    return ($ops | Sort-Object {
+                                        $t = $null
+                                        if ([datetime]::TryParse([string]$_.unixTimeStartMs, [ref]$t)) { return $t }
+                                        try { return [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$_.unixTimeStartMs).LocalDateTime } catch { return [datetime]::MinValue }
+                                    } -Descending | Select-Object -First 1)
+                                } catch { return $null }
+                            } `
+                            -PlanId $PlanId `
+                            -Since $RequestStartedAt `
+                            -Endpoint $Endpoint `
+                            -Headers $AuthHeader `
+                            -TimeoutSeconds 1800 `
+                            -PollIntervalSeconds 5
+                    }
+                    catch {
+                        Write-ObserveLog "Observation error for batch [$BatchId]: $($_.Exception.Message)" 'WARN' $PlanName
+                    }
+
+                    if ($null -ne $outcome) {
+                        $opId   = if ($null -ne $outcome.Operation.id)     { $outcome.Operation.id }     else { 'unknown' }
+                        $flowId = if ($null -ne $outcome.Operation.flowId) { $outcome.Operation.flowId } else { 'unknown' }
+                        $status = if ($null -ne $outcome.RawStatus)        { $outcome.RawStatus }        else { 'unknown' }
+                        Write-ObserveLog "Backrest operation reached terminal status for batch [$BatchId]. OperationId=[$opId] FlowId=[$flowId] Status=[$status] Outcome=[$($outcome.Outcome)]" 'INFO' $PlanName
+                    }
+                    else {
+                        Write-ObserveLog "No terminal operation status observed within wait window for batch [$BatchId]." 'WARN' $PlanName
+                    }
+                }
+
+                $capturedPlanId     = $planId
+                $capturedBatchId    = $batchId
+                $capturedPlanName   = $state.Name
+                $capturedStartedAt  = $requestStartedAt
+                $capturedEndpoint   = $BackrestEndpoint
+                $capturedAuth       = $AuthHeader
+                $capturedOpModule   = $OperationModule
+                $capturedLogFile    = $LogFile
+                $capturedErrLog     = $ErrorLogFile
+
+                Start-Job -ScriptBlock $observeScript -ArgumentList `
+                    $capturedPlanId, $capturedBatchId, $capturedPlanName, $capturedStartedAt,
+                    $capturedEndpoint, $capturedAuth, $capturedOpModule,
+                    $capturedLogFile, $capturedErrLog | Out-Null
+            }
+
+            if ($state.LastDispatchStatus -eq 'dispatched') {
+                # Mark as success now that the trigger was accepted; observation result is logged separately.
+                $state.LastDispatchStatus = 'success'
                 $global:MonitorControl.LastSuccessfulDispatch = $state.LastRun
             }
             Set-StateDirty
             Save-TriggerState
+            Save-PlanDispatchState
             Save-RuntimeState -Status 'running'
         }
 
@@ -894,6 +1077,7 @@ finally {
     try {
         Set-StateDirty
         Save-TriggerState
+        Save-PlanDispatchState
     }
     catch {
     }
