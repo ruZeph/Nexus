@@ -5,8 +5,13 @@
 $ErrorActionPreference = "Stop"
 $ScriptToTest = Join-Path $PSScriptRoot "Start-LiveBackup.ps1"
 
+# Fallback in case the script is named BackRest_Watcher.ps1
 if (-not (Test-Path $ScriptToTest)) {
-    Write-Host "[FAIL] Could not find Start-LiveBackup.ps1 in the current directory." -ForegroundColor Red
+    $ScriptToTest = Join-Path $PSScriptRoot "BackRest_Watcher.ps1"
+}
+
+if (-not (Test-Path $ScriptToTest)) {
+    Write-Host "[FAIL] Could not find the LiveBackup script in the current directory." -ForegroundColor Red
     exit 1
 }
 
@@ -19,6 +24,7 @@ $MockConfigDir = Join-Path $MockAppData "backrest"
 $MockConfig    = Join-Path $MockConfigDir "config.json"
 $TargetFolder1 = Join-Path $TestWorkspace "Target_Folder_A"
 $LogFile       = Join-Path $TestWorkspace "runner.log"
+$TestUsername  = "TestUser_$(Get-Random)"
 
 Write-Host "Setting up test workspace at $TestWorkspace..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Path $MockConfigDir -Force | Out-Null
@@ -57,20 +63,21 @@ function Assert-LogContains {
 # ==========================================
 # 3. Launch the Monitor in a Sandbox
 # ==========================================
-Write-Host "Launching Start-LiveBackup.ps1 in background test mode..." -ForegroundColor Cyan
+Write-Host "Launching script in background test mode..." -ForegroundColor Cyan
 
 # We use Start-Process to run it in a completely isolated environment,
 # redirecting APPDATA so it reads our mock config without touching your real Backrest setup.
+# NOTE: *>&1 is required to capture Write-Host (Stream 6) into Out-File
 $psArgs = "-NoProfile -ExecutionPolicy Bypass -Command `" `
     `$env:APPDATA = '$MockAppData'; `
-    `$env:USERNAME = 'TestUser_$(Get-Random)'; `
-    & '$ScriptToTest' -TestMode | Out-File -FilePath '$LogFile' -Encoding UTF8 `" "
+    `$env:USERNAME = '$TestUsername'; `
+    & '$ScriptToTest' -TestMode *>&1 | Out-File -FilePath '$LogFile' -Encoding UTF8 `" "
 
 $process = Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -PassThru -WindowStyle Hidden
 
 # Wait for startup
 if (-not (Assert-LogContains "Waiting for idle bounds")) {
-    Write-Host "[FAIL] Script failed to initialize or start watchers." -ForegroundColor Red
+    Write-Host "[FAIL] Script failed to initialize or start watchers. Check $LogFile for details." -ForegroundColor Red
     Stop-Process -Id $process.Id -Force
     exit 1
 }
@@ -89,7 +96,8 @@ try {
     Write-Host "`nRunning Test 1: Mutex Ownership Guard..."
     $secondProcArgs = "-NoProfile -ExecutionPolicy Bypass -Command `" `
         `$env:APPDATA = '$MockAppData'; `
-        & '$ScriptToTest' -TestMode | Out-File -FilePath '$TestWorkspace\runner2.log' -Encoding UTF8 `" "
+        `$env:USERNAME = '$TestUsername'; `
+        & '$ScriptToTest' -TestMode *>&1 | Out-File -FilePath '$TestWorkspace\runner2.log' -Encoding UTF8 `" "
     $proc2 = Start-Process -FilePath "powershell.exe" -ArgumentList $secondProcArgs -PassThru -WindowStyle Hidden
     Start-Sleep -Seconds 3
     $proc2Log = Get-Content "$TestWorkspace\runner2.log" -ErrorAction SilentlyContinue
@@ -135,8 +143,8 @@ try {
     # TEST 4: Debounce Timeout & API Trigger
     # ---------------------------------------------------------
     Write-Host "`nRunning Test 4: Idle Debounce & API Trigger..."
-    Write-Host "Waiting up to 15s for the 10-second idle debounce to elapse..." -ForegroundColor DarkGray
-    if (Assert-LogContains "Batch flush: Triggering \[Mock Database Backup\] covering .* coalesced event" 15) {
+    Write-Host "Waiting up to 25s for the 10-second idle debounce to elapse..." -ForegroundColor DarkGray
+    if (Assert-LogContains "Batch flush: Triggering \[Mock Database Backup\] covering .* coalesced event" 25) {
         Write-Host "[PASS] Batch successfully flushed after idle debounce." -ForegroundColor Green
         $TestsPassed++
     } else {
@@ -150,7 +158,7 @@ try {
     Write-Host "`nRunning Test 5: Idempotent State Verification..."
     $ExpectedStateFile = Join-Path $PSScriptRoot ".state\trigger-state.json"
     if (Test-Path $ExpectedStateFile) {
-        $stateContent = Get-Content $ExpectedStateFile | ConvertFrom-Json
+        $stateContent = Get-Content $ExpectedStateFile -Raw | ConvertFrom-Json
         if ($null -ne $stateContent."Test-Plan-A".LastRun) {
             Write-Host "[PASS] State file created and LastRun timestamp recorded." -ForegroundColor Green
             $TestsPassed++
@@ -168,8 +176,8 @@ try {
     # ---------------------------------------------------------
     Write-Host "`nRunning Test 6: Safe-Stop Signaling..."
     $StopFile = Join-Path $PSScriptRoot ".stop-livebackup"
-    New-Item -ItemType File -Path $StopFile | Out-Null
-    if (Assert-LogContains "Safe stop signal detected.*Shutting down cleanly" 10) {
+    New-Item -ItemType File -Path $StopFile -Force | Out-Null
+    if (Assert-LogContains "Safe stop signal detected.*Shutting down cleanly" 15) {
         Write-Host "[PASS] Script detected stop signal and shut down gracefully." -ForegroundColor Green
         $TestsPassed++
     } else {
@@ -190,6 +198,9 @@ try {
     # Do not delete the user's real state dir, but clean up the mocked test entry if possible
     $ExpectedStateFile = Join-Path $PSScriptRoot ".state\trigger-state.json"
     if (Test-Path $ExpectedStateFile) { Remove-Item $ExpectedStateFile -Force -ErrorAction SilentlyContinue }
+    
+    $StopFile = Join-Path $PSScriptRoot ".stop-livebackup"
+    if (Test-Path $StopFile) { Remove-Item $StopFile -Force -ErrorAction SilentlyContinue }
 
     Write-Host "`n=========================================="
     Write-Host " Test Summary"

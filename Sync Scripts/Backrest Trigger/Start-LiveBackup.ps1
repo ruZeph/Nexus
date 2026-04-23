@@ -3,48 +3,115 @@ param (
 )
 
 # ==========================================
-# 1. Structured Observability & Setup
+# 1. Enterprise Logging Engine
 # ==========================================
-function Write-Log {
-    param([string]$Message, [string]$Level="INFO", [ConsoleColor]$Color="White")
-    $ts = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-    $pidPad = $PID.ToString().PadRight(5)
-    Write-Host "[$ts] [PID:$pidPad] [$Level] $Message" -ForegroundColor $Color
+$BasePath       = $PSScriptRoot
+$LogDir         = Join-Path $BasePath "logs"
+$ArchiveDir     = Join-Path $LogDir "archive"
+$LogFile        = Join-Path $LogDir "runner.log"
+$ErrorLogFile   = Join-Path $LogDir "runner-error.log"
+$MaxLogSizeMB   = 5
+$ArchiveDays    = 30
+
+$global:IsTestMode = $TestMode
+
+function Invoke-LogRotation {
+    if ($global:IsTestMode) { return }
+    if (-not (Test-Path $LogFile)) { return }
+
+    $logFileInfo = Get-Item $LogFile
+    if ($logFileInfo.Length / 1MB -gt $MaxLogSizeMB) {
+        if (-not (Test-Path $ArchiveDir)) { New-Item -ItemType Directory -Path $ArchiveDir -Force | Out-Null }
+        
+        $timestamp = (Get-Date).ToString("yyyy-MM-dd_HHmmss")
+        $archivePath = Join-Path $ArchiveDir "runner_$timestamp.log"
+        
+        try {
+            Move-Item -Path $LogFile -Destination $archivePath -Force
+            # Clean old archives
+            Get-ChildItem -Path $ArchiveDir -Filter "*.log" | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-$ArchiveDays) } | Remove-Item -Force
+        } catch {
+            Write-Host "[$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))] [WARN] Failed to rotate log file: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
 }
 
-$BasePath           = $PSScriptRoot
+function Write-Log {
+    param(
+        [string]$Message, 
+        [string]$Level="INFO", 
+        [ConsoleColor]$Color="White",
+        [string]$Component="System"
+    )
+    $ts = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    $pidPad = $PID.ToString().PadRight(5)
+    $logLine = "[$ts] [PID:$pidPad] [$Level] [$Component] $Message"
+    
+    # Always write to console (Stream 6) for interactive/test tracking
+    Write-Host $logLine -ForegroundColor $Color
+
+    if (-not $global:IsTestMode) {
+        # Lazy directory creation
+        if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
+
+        $attempts = 0
+        $success = $false
+        
+        # Safe Append with Retry for concurrency locks
+        while ($attempts -lt 3 -and -not $success) {
+            try {
+                $logLine | Out-File -FilePath $LogFile -Append -Encoding UTF8 -ErrorAction Stop
+                
+                # Dual-write failures to the segregated error log
+                if ($Level -match "^(ERROR|WARN)$") {
+                    $logLine | Out-File -FilePath $ErrorLogFile -Append -Encoding UTF8 -ErrorAction Stop
+                }
+                $success = $true
+            } catch {
+                $attempts++
+                Start-Sleep -Milliseconds 200
+            }
+        }
+    }
+}
+
+# Run Log Rotation on startup
+Invoke-LogRotation
+
+if ($TestMode) {
+    Write-Log "TEST MODE ENABLED - API calls MOCKED. Idle timeout reduced." "INFO" "Magenta" "Preflight"
+}
+
+# ==========================================
+# 2. Configuration & State Paths
+# ==========================================
 $EnvFilePath        = Join-Path $BasePath ".env"
 $StateDir           = Join-Path $BasePath ".state"
 $StateFile          = Join-Path $StateDir "trigger-state.json"
 $BackrestConfigPath = "$env:APPDATA\backrest\config.json"
-$BackrestEndpoint   = "http://localhost:9898/v1.Backrest/Backup"
+$BackrestEndpoint   = "http://localhost:9090/v1.Backrest/Backup"
 $StopSignalFile     = Join-Path $BasePath ".stop-livebackup"
 $IdleTimeSeconds    = if ($TestMode) { 10 } else { 120 }
-$global:IsTestMode  = $TestMode
 
-if ($TestMode) {
-    Write-Log "TEST MODE ENABLED - Idle timeout: $IdleTimeSeconds sec. API calls MOCKED." "INFO" "Magenta"
-}
-
-# Ensure state directory exists
-if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir | Out-Null }
+# Ensure state directory exists lazily
+if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
 if (Test-Path $StopSignalFile) { Remove-Item $StopSignalFile -ErrorAction SilentlyContinue }
 
 # ==========================================
-# 2. Mutex / Ownership Guard
+# 3. Mutex / Ownership Guard
 # ==========================================
 $mutexName = "Global\BackrestLiveMonitor_$env:USERNAME"
 $mutexCreated = $false
 $mutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$mutexCreated)
 
 if (-not $mutexCreated) {
-    Write-Log "Another instance is already running. Exiting to prevent overlapping watchers." "WARN" "Yellow"
+    Write-Log "Another instance is already active. Exiting to prevent overlapping watchers." "WARN" "Yellow" "Preflight"
     exit 0
 }
 
 try {
     # ==========================================
-    # 3. Preflight: Auth & Environment
+    # 4. Preflight: Auth & Environment
     # ==========================================
     $AuthHeader = @{}
     if (Test-Path $EnvFilePath) {
@@ -56,17 +123,17 @@ try {
         if ($env:BACKREST_USER -and $env:BACKREST_PASS) {
             $AuthBytes = [System.Text.Encoding]::UTF8.GetBytes("$($env:BACKREST_USER):$($env:BACKREST_PASS)")
             $AuthHeader = @{ Authorization = "Basic $([Convert]::ToBase64String($AuthBytes))" }
-            Write-Log "Authentication loaded from .env" "INFO" "Cyan"
+            Write-Log "Basic Authentication loaded from .env" "INFO" "Cyan" "Preflight"
         }
     } else {
-        Write-Log "No .env file found. Proceeding without authentication." "INFO" "DarkGray"
+        Write-Log "No .env file found. Proceeding without authentication." "INFO" "DarkGray" "Preflight"
     }
 
     # ==========================================
-    # 4. Preflight: Parse Backrest Config
+    # 5. Preflight: Parse Backrest Config
     # ==========================================
     if (-not (Test-Path $BackrestConfigPath)) {
-        Write-Log "CRITICAL: Backrest config not found at $BackrestConfigPath. Is Backrest installed?" "ERROR" "Red"
+        Write-Log "Backrest config not found at $BackrestConfigPath. Is Backrest installed?" "ERROR" "Red" "Preflight"
         exit 1
     }
 
@@ -74,7 +141,7 @@ try {
     $plansRaw  = $config.plans
 
     if (-not $plansRaw) {
-        Write-Log "No plans found in Backrest configuration." "WARN" "Yellow"
+        Write-Log "No plans found in Backrest configuration." "WARN" "Yellow" "Preflight"
         exit 0
     }
 
@@ -89,21 +156,21 @@ try {
     }
 
     # ==========================================
-    # 5. Idempotent State Loading
+    # 6. Idempotent State Loading
     # ==========================================
     $global:PlanState = @{}
     $savedState = @{}
     if (Test-Path $StateFile) {
         try {
             $savedState = Get-Content -Raw $StateFile | ConvertFrom-Json -AsHashtable
-            Write-Log "Loaded previous trigger state from disk." "INFO" "DarkGray"
+            Write-Log "Loaded previous trigger state from disk." "INFO" "DarkGray" "State"
         } catch {
-            Write-Log "Failed to parse state file. Starting fresh." "WARN" "Yellow"
+            Write-Log "Failed to parse state file. Starting fresh." "WARN" "Yellow" "State"
         }
     }
 
     # ==========================================
-    # 6. Intelligent Watcher Setup & Noise Filter
+    # 7. Watcher Setup & Noise Filter
     # ==========================================
     $watchers = @()
 
@@ -114,7 +181,6 @@ try {
         
         if (-not $paths -or $paths.Count -eq 0) { continue }
         
-        # Initialize state per entity (Queue)
         $global:PlanState[$planId] = @{
             Name       = $planName
             LastChange = $null
@@ -128,10 +194,10 @@ try {
                 $watcher.IncludeSubdirectories = $true
                 $watcher.NotifyFilter = [IO.NotifyFilters]::LastWrite, [IO.NotifyFilters]::FileName, [IO.NotifyFilters]::DirectoryName
                 
-                # Action: Filter noise, then Queue
+                # Action: Filter noise, coalesce to Queue
                 $action = {
                     $fileName = $Event.SourceEventArgs.Name
-                    # Ignore noise: temp files, swap files, lock files, and ~ backups
+                    # Drop temp files, locks, swaps, and temp-backups before entering queue
                     if ($fileName -match '(?i)\.(tmp|temp|bak|swp|lock|log)$|^\~') { return }
 
                     $triggeredPlanId = $Event.MessageData
@@ -139,16 +205,16 @@ try {
                     $global:PlanState[$triggeredPlanId].EventCount++
                     
                     if ($global:IsTestMode -and ($global:PlanState[$triggeredPlanId].EventCount % 10 -eq 1)) {
-                        Write-Host "[$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))] [PID:$($PID.ToString().PadRight(5))] [TEST] Coalesced events queued for [$triggeredPlanId]." -ForegroundColor DarkGray
+                        Write-Log "Coalesced events queued." "TEST" "DarkGray" $global:PlanState[$triggeredPlanId].Name
                     }
                 }
 
-                # Fallback detection for Buffer Overflows
+                # Fallback: Buffer Overflow Protection
                 $errorAction = {
                     $faultedPlanId = $Event.MessageData
-                    Write-Host "[$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))] [PID:$($PID.ToString().PadRight(5))] [WARN] Buffer overflow for [$faultedPlanId]. Forcing queue update." -ForegroundColor Red
+                    Write-Log "Watcher buffer overflow detected. Forcing queue update." "WARN" "Red" $global:PlanState[$faultedPlanId].Name
                     $global:PlanState[$faultedPlanId].LastChange = [DateTime]::Now
-                    $global:PlanState[$faultedPlanId].EventCount += 100 # Arbitrary bump to indicate mass change
+                    $global:PlanState[$faultedPlanId].EventCount += 100
                 }
                 
                 Register-ObjectEvent $watcher 'Changed' -Action $action -MessageData $planId | Out-Null
@@ -160,24 +226,24 @@ try {
                 $watcher.EnableRaisingEvents = $true
                 $watchers += $watcher
                 
-                Write-Log "Watching [$planName]: $folder" "INFO" "Cyan"
+                Write-Log "Attached FileSystemWatcher: $folder" "INFO" "Cyan" $planName
             } else {
-                Write-Log "Path not found in plan '$planName': $folder" "WARN" "Yellow"
+                Write-Log "Path not found, bypassing: $folder" "WARN" "Yellow" $planName
             }
         }
     }
 
-    Write-Log "Dynamic Tripwire active. Coalescing events and waiting for idle bounds..." "INFO" "Green"
+    Write-Log "Watcher pool initialized. Standing by for events." "INFO" "Green" "System"
 
     # ==========================================
-    # 7. Queue Processing & Batch Execution
+    # 8. Queue Processing & Batch Execution
     # ==========================================
     $stateChanged = $false
 
     while ($true) {
-        # Safe-stop signaling
+        # Safe-stop boundary check
         if (Test-Path $StopSignalFile) {
-            Write-Log "Safe stop signal detected ($StopSignalFile). Shutting down cleanly." "INFO" "Magenta"
+            Write-Log "Safe stop signal detected ($StopSignalFile). Initiating graceful shutdown." "INFO" "Magenta" "Manager"
             Remove-Item $StopSignalFile -Force -ErrorAction SilentlyContinue
             break
         }
@@ -192,17 +258,16 @@ try {
             $events     = $state.EventCount
             $planName   = $state.Name
             
-            # Dequeue condition: Queued events exist AND debounce timeout has passed
+            # Dequeue condition: Events exist AND debounce window satisfied
             if ($null -ne $lastChange -and $events -gt 0 -and ($now - $lastChange).TotalSeconds -ge $IdleTimeSeconds) {
                 
-                # Batch Summary Log
-                Write-Log "Batch flush: Triggering [$planName] covering $events coalesced event(s)." "INFO" "Yellow"
+                Write-Log "Batch flush triggered. Dispatching API request covering $events coalesced event(s)." "INFO" "Yellow" $planName
                 
                 $JsonPayload = @{ value = $planId } | ConvertTo-Json -Compress
                 $apiSuccess = $false
                 
                 if ($global:IsTestMode) {
-                    Write-Log "API call mocked for [$planName]. Backup NOT actually triggered." "TEST" "Magenta"
+                    Write-Log "API call MOCKED. Job skipped." "TEST" "Magenta" $planName
                     $apiSuccess = $true
                 } else {
                     $RestParams = @{
@@ -219,15 +284,15 @@ try {
                     } 
                     catch {
                         if ($_.Exception.GetType().Name -eq "WebException" -and $_.Exception.Status -eq "Timeout") {
-                            Write-Log "Background backup successfully dispatched for [$planName]." "SUCCESS" "Green"
+                            Write-Log "Job successfully dispatched to background processor." "SUCCESS" "Green" $planName
                             $apiSuccess = $true
                         } else {
-                            Write-Log "API call failed for [$planName]: $($_.Exception.Message)" "ERROR" "Red"
+                            Write-Log "API dispatch failed: $($_.Exception.Message)" "ERROR" "Red" $planName
                         }
                     }
                 }
                 
-                # On success, clear the queue and update state
+                # Update queue state
                 if ($apiSuccess) {
                     $global:PlanState[$planId].LastChange = $null
                     $global:PlanState[$planId].EventCount = 0
@@ -237,24 +302,21 @@ try {
             }
         }
 
-        # Save Idempotent State only if a batch was processed
-        if ($stateChanged -and -not $global:IsTestMode) {
+        # Flush idempotent state boundaries
+        if ($stateChanged) {
             try {
                 $global:PlanState | ConvertTo-Json -Depth 3 -Compress | Set-Content $StateFile
                 $stateChanged = $false
             } catch {
-                Write-Log "Failed to write state file: $($_.Exception.Message)" "WARN" "Yellow"
+                Write-Log "Failed to flush state to disk: $($_.Exception.Message)" "WARN" "Yellow" "State"
             }
         }
     }
 }
 finally {
-    # Clean up gracefully
-    Write-Log "Releasing resources and stopping watchers..." "INFO" "DarkGray"
+    Write-Log "Releasing resources and unbinding watcher pool..." "INFO" "DarkGray" "System"
     
-    if (-not $global:IsTestMode) {
-        try { $global:PlanState | ConvertTo-Json -Depth 3 -Compress | Set-Content $StateFile } catch {}
-    }
+    try { $global:PlanState | ConvertTo-Json -Depth 3 -Compress | Set-Content $StateFile } catch {}
 
     $watchers | ForEach-Object { 
         $_.EnableRaisingEvents = $false
@@ -264,4 +326,6 @@ finally {
         $mutex.ReleaseMutex()
         $mutex.Dispose()
     }
+    
+    Write-Log "Shutdown complete." "INFO" "DarkGray" "System"
 }
