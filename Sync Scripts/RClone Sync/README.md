@@ -99,6 +99,7 @@ The setup script will validate PowerShell version and rclone installation, downl
 │   └── Run-RcloneJobs.ps1
 ├── tools/
 │   ├── New-RcloneJobConfig.ps1
+│   ├── Start-RcloneMonitor.ps1
 │   └── Test-RcloneJobs.ps1
 ├── logs/
 │   ├── runner.log
@@ -374,6 +375,14 @@ Set user environment variables once (cleaner and reusable across task updates):
 
 If your current shell does not expose `$env:RCLONE_SYNC_*` immediately, use User-scope lookup via `[Environment]::GetEnvironmentVariable(...)` as shown below.
 
+Recommended scheduler wrapper:
+
+```powershell
+.\tools\Start-RcloneMonitor.ps1
+```
+
+The wrapper reads the `RCLONE_SYNC_LAUNCHER` and `RCLONE_SYNC_CONFIG_PATH` user environment variables, validates them, and launches the runner.
+
 ```powershell
 schtasks /create `
   /tn "Rclone Monitor Runner" `
@@ -382,7 +391,7 @@ schtasks /create `
   /rl HIGHEST `
   /it `
   /f `
-  /tr "powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -Command `$launcher=[Environment]::GetEnvironmentVariable('RCLONE_SYNC_LAUNCHER','User'); `$config=[Environment]::GetEnvironmentVariable('RCLONE_SYNC_CONFIG_PATH','User'); if([string]::IsNullOrWhiteSpace(`$launcher) -or [string]::IsNullOrWhiteSpace(`$config)){ throw 'Missing RCLONE_SYNC_* user environment variables.' }; & `$launcher -ConfigPath `$config -Mode monitor -TaskScheduler -Silent -IdleTimeSeconds 60"
+  /tr "powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File \"<INSTALLATION PATH>\RClone Sync\tools\Start-RcloneMonitor.ps1\""
 ```
 
 IMP: Confirm both environment variables are set for the same user account that runs the scheduled task.
@@ -390,9 +399,7 @@ IMP: Confirm both environment variables are set for the same user account that r
 Quick local validation from a PowerShell terminal:
 
 ```powershell
-$launcher = [Environment]::GetEnvironmentVariable('RCLONE_SYNC_LAUNCHER','User')
-$config = [Environment]::GetEnvironmentVariable('RCLONE_SYNC_CONFIG_PATH','User')
-& $launcher -ConfigPath $config -Mode monitor -TaskScheduler -Silent -IdleTimeSeconds 60
+.\tools\Start-RcloneMonitor.ps1
 ```
 
 Flags: logon-triggered · hidden window · `-TaskScheduler` for scheduler-specific behavior · `-Silent` for minimal console output · 60-second idle debounce.
@@ -416,6 +423,7 @@ To add new jobs, edit `backup-jobs.json`. The running monitor picks them up with
 | Silent mode | `.\Launch-Runner.ps1 -Mode run -Silent` |
 | Monitor mode | `.\Launch-Runner.ps1 -Mode monitor -IdleTimeSeconds 10` |
 | Custom config | `.\Launch-Runner.ps1 -Mode run -ConfigPath ./custom.json` |
+| Scheduler wrapper | `.\tools\Start-RcloneMonitor.ps1` |
 
 ### Exit Codes
 
