@@ -373,8 +373,10 @@ schtasks /create `
   /rl HIGHEST `
   /it `
   /f `
-  /tr 'powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Launch-Runner.ps1" -Mode monitor -TaskScheduler -Silent -IdleTimeSeconds 60'
+  /tr 'powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File "<INSTALLATION PATH>\Nexus\Sync Scripts\Launch-Runner.ps1" -Mode monitor -TaskScheduler -Silent -IdleTimeSeconds 60'
 ```
+
+IMP: Replace `<INSTALLATION PATH>` with Script installtion root.
 
 Flags: logon-triggered · hidden window · `-TaskScheduler` for scheduler-specific behavior · `-Silent` for minimal console output · 60-second idle debounce.
 
