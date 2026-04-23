@@ -128,8 +128,18 @@ try {
     # TEST 3: Event Coalescing
     # ---------------------------------------------------------
     Write-Host "`nRunning Test 3: Event Coalescing..."
+    $dataPath = Join-Path $TargetFolder1 "data.txt"
     for ($i=1; $i -le 15; $i++) {
-        Set-Content -Path (Join-Path $TargetFolder1 "data.txt") -Value "Line $i"
+        $written = $false
+        for ($attempt=1; $attempt -le 5 -and -not $written; $attempt++) {
+            try {
+                Set-Content -Path $dataPath -Value "Line $i" -ErrorAction Stop
+                $written = $true
+            } catch {
+                if ($attempt -eq 5) { throw }
+                Start-Sleep -Milliseconds (40 * $attempt)
+            }
+        }
     }
     if (Assert-LogContains "Coalesced events queued for \[Test-Plan-A\]" 5) {
         Write-Host "[PASS] Multiple file changes successfully coalesced into queue." -ForegroundColor Green

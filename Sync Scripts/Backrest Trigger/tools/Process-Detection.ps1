@@ -41,6 +41,7 @@ function Get-WatcherProcesses {
         $allProcesses |
         Where-Object {
             $_.Name -in @('powershell.exe', 'pwsh.exe') -and
+            [int]$_.ProcessId -ne [int]$PID -and  # Exclude current process
             (
                 $_.CommandLine -match [regex]::Escape($ScriptName) -or
                 $_.CommandLine -match [regex]::Escape($WrapperName)
@@ -213,7 +214,9 @@ function Test-WatcherIsRunning {
     param(
         [Parameter(Mandatory = $true)][string]$LogFile,
         [string]$MutexName = 'Global\BackrestLiveMonitor_',
-        [int]$HeartbeatFreshSeconds = 180
+        [int]$HeartbeatFreshSeconds = 180,
+        [string]$ResourceLogDir = $null,
+        [hashtable]$ResourceState = @{}
     )
     
     <#
@@ -227,6 +230,8 @@ function Test-WatcherIsRunning {
     3. Heartbeat log check (recent activity)
     4. Mutex state (ownership indicator)
     
+    Optionally logs resource metrics for health monitoring.
+    
     .PARAMETER LogFile
     Path to the runner log file for heartbeat validation.
     
@@ -235,6 +240,12 @@ function Test-WatcherIsRunning {
     
     .PARAMETER HeartbeatFreshSeconds
     How recent a log entry must be to count as a heartbeat. Default 180 seconds.
+    
+    .PARAMETER ResourceLogDir
+    Optional: Path to log resource metrics (detection-resource.log)
+    
+    .PARAMETER ResourceState
+    Optional: Hashtable to track CPU/memory deltas between calls
     
     .OUTPUTS
     [PSCustomObject] with properties:
@@ -315,6 +326,11 @@ function Test-WatcherIsRunning {
         }
     }
     
+    # Optional: Log resource metrics for health monitoring
+    if (-not [string]::IsNullOrWhiteSpace($ResourceLogDir)) {
+        Write-DetectionResourceLog -LogDir $ResourceLogDir -State $ResourceState -Context "detection-$confidence"
+    }
+    
     return [PSCustomObject]@{
         IsRunning = $isRunning
         Confidence = $confidence
@@ -337,6 +353,75 @@ function Request-SafeStop {
     Set-Content -LiteralPath $stopSignalFile -Value "[$stamp] $Reason" -Encoding UTF8
     
     return $stopSignalFile
+}
+
+function Write-DetectionResourceLog {
+    param(
+        [Parameter(Mandatory = $true)][string]$LogDir,
+        [hashtable]$State = @{},
+        [string]$Context = 'detection-check'
+    )
+    
+    <#
+    .SYNOPSIS
+    Log resource metrics for the detection utility.
+    
+    .DESCRIPTION
+    Records CPU, memory, handle, and thread metrics using RClone-inspired patterns.
+    Tracks resource usage over time and warns on thresholds.
+    #>
+    
+    try {
+        $proc = Get-Process -Id $PID -ErrorAction Stop
+        $now = Get-Date
+        $cpuTotalSec = $proc.TotalProcessorTime.TotalSeconds
+        $cpuPct = 0.0
+        
+        if ($State.ContainsKey('LastSampleTime') -and $State.ContainsKey('LastCpuSeconds')) {
+            $elapsedSec = ($now - $State.LastSampleTime).TotalSeconds
+            if ($elapsedSec -gt 0) {
+                $deltaCpuSec = $cpuTotalSec - [double]$State.LastCpuSeconds
+                $cores = [math]::Max([Environment]::ProcessorCount, 1)
+                $cpuPct = [math]::Round((($deltaCpuSec / ($elapsedSec * $cores)) * 100), 2)
+            }
+        }
+        
+        $workingMb = [math]::Round($proc.WorkingSet64 / 1MB, 2)
+        $privateMb = [math]::Round($proc.PrivateMemorySize64 / 1MB, 2)
+        $threads = $proc.Threads.Count
+        $handles = $proc.HandleCount
+        
+        $logMsg = "[RESOURCE] context=$Context pid=$PID cpu_pct=$cpuPct working_set_mb=$workingMb private_mb=$privateMb handles=$handles threads=$threads"
+        
+        if (-not (Test-Path $LogDir)) {
+            New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+        }
+        
+        $resourceLog = Join-Path $LogDir 'detection-resource.log'
+        $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        $line = "[$ts] $logMsg"
+        
+        [System.IO.File]::AppendAllText($resourceLog, $line + [Environment]::NewLine)
+        
+        # Check for warning conditions (adapted thresholds for detection utility)
+        $warnings = @()
+        if ($cpuPct -ge 75) { $warnings += "cpu_pct=$cpuPct>=75" }
+        if ($privateMb -ge 100) { $warnings += "private_mb=$privateMb>=100" }
+        if ($handles -ge 1500) { $warnings += "handles=$handles>=1500" }
+        if ($threads -ge 80) { $warnings += "threads=$threads>=80" }
+        
+        if ($warnings.Count -gt 0) {
+            $warnMsg = "[RESOURCE WARN] context=$Context $($warnings -join ' ')"
+            $warnLine = "[$ts] $warnMsg"
+            [System.IO.File]::AppendAllText($resourceLog, $warnLine + [Environment]::NewLine)
+        }
+        
+        $State['LastSampleTime'] = $now
+        $State['LastCpuSeconds'] = $cpuTotalSec
+    }
+    catch {
+        # Silently fail - detection resource logging should not block detection itself
+    }
 }
 
 function Stop-WatcherProcess {
@@ -362,7 +447,7 @@ function Stop-WatcherProcess {
         if ($LogDir -and (Test-Path $LogDir)) {
             $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
             $message = "[$timestamp] [MANAGER] Force stopped process tree rooted at PID $ProcessId"
-            Add-Content -LiteralPath (Join-Path $LogDir 'manager.log') -Value $message -Encoding UTF8 -ErrorAction SilentlyContinue
+            [System.IO.File]::AppendAllText((Join-Path $LogDir 'manager.log'), "$message`n")
         }
         
         return $true
@@ -371,23 +456,30 @@ function Stop-WatcherProcess {
         if ($LogDir -and (Test-Path $LogDir)) {
             $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
             $message = "[$timestamp] [MANAGER] Failed to stop process tree rooted at PID ${ProcessId}: $($_.Exception.Message)"
-            Add-Content -LiteralPath (Join-Path $LogDir 'manager-error.log') -Value $message -Encoding UTF8 -ErrorAction SilentlyContinue
+            [System.IO.File]::AppendAllText((Join-Path $LogDir 'manager-error.log'), "$message`n")
         }
         
         return $false
     }
 }
 
-# Export public functions
-Export-ModuleMember -Function @(
-    'Get-ProcessCommandLine',
-    'Get-ProcessStartTime',
-    'Get-WatcherProcesses',
-    'Get-MutexState',
-    'Get-HeartbeatStatus',
-    'Resolve-LiveWatcherPid',
-    'Get-WatcherProcessDetails',
-    'Test-WatcherIsRunning',
-    'Request-SafeStop',
-    'Stop-WatcherProcess'
-)
+# Export public functions (only when run as a module)
+try {
+    Export-ModuleMember -Function @(
+        'Get-ProcessCommandLine',
+        'Get-ProcessStartTime',
+        'Get-WatcherProcesses',
+        'Get-MutexState',
+        'Get-HeartbeatStatus',
+        'Resolve-LiveWatcherPid',
+        'Get-WatcherProcessDetails',
+        'Test-WatcherIsRunning',
+        'Request-SafeStop',
+        'Stop-WatcherProcess',
+        'Write-DetectionResourceLog'
+    )
+}
+catch {
+    # Export-ModuleMember only works when script is imported as a module
+    # If dot-sourced, this will fail silently and functions are still available
+}

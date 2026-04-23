@@ -87,23 +87,82 @@ function Write-Log {
         Write-Host $logLine -ForegroundColor $Color
     }
 
+    # Use direct System.IO.File for better concurrency (RClone pattern)
     $attempts = 0
-    $success = $false
+    $maxAttempts = 3
     
-    # Safe Append with Retry for concurrency locks
-    while ($attempts -lt 3 -and -not $success) {
+    while ($attempts -lt $maxAttempts) {
         try {
-            $logLine | Out-File -FilePath $LogFile -Append -Encoding UTF8 -ErrorAction Stop
+            [System.IO.File]::AppendAllText($LogFile, "$logLine`n")
             
             # Dual-write failures to the segregated error log
             if ($Level -match "^(ERROR|WARN)$") {
-                $logLine | Out-File -FilePath $ErrorLogFile -Append -Encoding UTF8 -ErrorAction Stop
+                [System.IO.File]::AppendAllText($ErrorLogFile, "$logLine`n")
             }
-            $success = $true
-        } catch {
+            return
+        } 
+        catch {
             $attempts++
-            Start-Sleep -Milliseconds 200
+            if ($attempts -lt $maxAttempts) {
+                Start-Sleep -Milliseconds (50 * $attempts)
+            }
         }
+    }
+}
+
+function Write-ResourceLog {
+    param(
+        [hashtable]$State = @{},
+        [string]$Context = 'monitor-loop'
+    )
+    
+    <#
+    .SYNOPSIS
+    Log resource metrics using RClone-inspired pattern.
+    Tracks CPU, memory, handles, threads with warning thresholds.
+    #>
+    
+    try {
+        $proc = Get-Process -Id $PID -ErrorAction Stop
+        $now = Get-Date
+        $cpuTotalSec = $proc.TotalProcessorTime.TotalSeconds
+        $cpuPct = 0.0
+        
+        if ($State.ContainsKey('LastSampleTime') -and $State.ContainsKey('LastCpuSeconds')) {
+            $elapsedSec = ($now - $State.LastSampleTime).TotalSeconds
+            if ($elapsedSec -gt 0) {
+                $deltaCpuSec = $cpuTotalSec - [double]$State.LastCpuSeconds
+                $cores = [math]::Max([Environment]::ProcessorCount, 1)
+                $cpuPct = [math]::Round((($deltaCpuSec / ($elapsedSec * $cores)) * 100), 2)
+            }
+        }
+        
+        $workingMb = [math]::Round($proc.WorkingSet64 / 1MB, 2)
+        $privateMb = [math]::Round($proc.PrivateMemorySize64 / 1MB, 2)
+        $threads = $proc.Threads.Count
+        $handles = $proc.HandleCount
+        
+        $logMsg = "[RESOURCE] context=$Context pid=$PID cpu_pct=$cpuPct working_set_mb=$workingMb private_mb=$privateMb handles=$handles threads=$threads"
+        Write-Log $logMsg "INFO" "DarkGray" "Resources"
+        
+        # Check for warning conditions (thresholds from RClone pattern)
+        $warnings = @()
+        if ($cpuPct -ge 80) { $warnings += "cpu_pct=$cpuPct>=80" }
+        if ($privateMb -ge 250) { $warnings += "private_mb=$privateMb>=250" }
+        if ($workingMb -ge 220) { $warnings += "working_set_mb=$workingMb>=220" }
+        if ($handles -ge 2000) { $warnings += "handles=$handles>=2000" }
+        if ($threads -ge 100) { $warnings += "threads=$threads>=100" }
+        
+        if ($warnings.Count -gt 0) {
+            $warnMsg = "[RESOURCE WARN] context=$Context $($warnings -join ' ')"
+            Write-Log $warnMsg "WARN" "Yellow" "Resources"
+        }
+        
+        $State['LastSampleTime'] = $now
+        $State['LastCpuSeconds'] = $cpuTotalSec
+    }
+    catch {
+        # Silent fail - resource logging should not block monitor operations
     }
 }
 
@@ -159,6 +218,7 @@ if ($DetectionLoaded -and (Get-Command 'Test-WatcherIsRunning' -ErrorAction Sile
         if ($detection.IsRunning -and $detection.Confidence -in @('high', 'medium')) {
             $pidStr = if ($null -ne $detection.ProcessId) { $detection.ProcessId } else { 'unknown' }
             $ageStr = if ($null -ne $detection.HeartbeatAge) { "$($detection.HeartbeatAge)s" } else { 'N/A' }
+            Write-Log "Another instance is already running (layered detection). Exiting to prevent overlapping watchers." "WARN" "Yellow" "Preflight"
             Write-Log "Watcher already running (PID: $pidStr, confidence: $($detection.Confidence)). Heartbeat age: $ageStr. Signals: $($detection.Signals.Values -join ', ')" "WARN" "Yellow" "Detection"
             Write-Log "To stop the watcher, create a file named '.stop-livebackup' in $BasePath or use 'Stop-Process -Id $pidStr'" "INFO" "Cyan" "Detection"
             exit 0
@@ -336,6 +396,9 @@ try {
     # 8. Queue Processing & Batch Execution
     # ==========================================
     $stateChanged = $false
+    $global:ResourceState = @{}
+    $lastResourceLogTime = [DateTime]::Now
+    $resourceLogIntervalSeconds = 60  # Log resources every 60 seconds
 
     while ($true) {
         # Safe-stop boundary check
@@ -347,6 +410,13 @@ try {
 
         Start-Sleep -Seconds 5
         $now = [DateTime]::Now
+        
+        # Periodic resource logging (every 60 seconds)
+        if (($now - $lastResourceLogTime).TotalSeconds -ge $resourceLogIntervalSeconds) {
+            Write-ResourceLog -State $global:ResourceState -Context "monitor-loop"
+            $lastResourceLogTime = $now
+        }
+        
         $activePlans = @($global:PlanState.Keys)
         
         foreach ($planId in $activePlans) {
