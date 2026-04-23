@@ -47,11 +47,22 @@ if (-not (Test-Path $BackrestConfigPath)) {
 }
 
 $config = Get-Content -Raw $BackrestConfigPath | ConvertFrom-Json
-$plans  = $config.plans
+$plansRaw  = $config.plans
 
-if (-not $plans) {
+if (-not $plansRaw) {
     Write-Warning "No plans found in Backrest configuration."
     exit 0
+}
+
+# Normalize Backrest's JSON structure directly from the array
+$plans = @()
+foreach ($p in @($plansRaw)) {
+    if (-not $p.id) { continue } # Skip invalid entries
+    $plans += [PSCustomObject]@{
+        id    = $p.id
+        name  = if ($null -ne $p.name) { $p.name } else { $p.id }
+        paths = if ($null -ne $p.paths) { @($p.paths) } else { @() }
+    }
 }
 
 # ==========================================
