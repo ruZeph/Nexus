@@ -94,7 +94,7 @@ The intended scheduler target is the wrapper script:
 You can also register the same wrapper with `schtasks` from PowerShell:
 
 ```powershell
-schtasks /Create /TN "Backrest Live Backup Monitor" /SC ONLOGON /RL HIGHEST /F /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\Custom User\Nexus\Sync Scripts\Backrest Trigger\tools\Start-BackrestMonitor.ps1\""
+schtasks /Create /TN "Backrest Live Backup Monitor" /SC ONLOGON /RL HIGHEST /F /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"C:\Custom User\Nexus\Sync Scripts\Backrest Trigger\tools\Start-BackrestMonitor.ps1`""
 ```
 
 - Start in:
