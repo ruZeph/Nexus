@@ -112,6 +112,24 @@ if ($TestMode) {
 }
 
 # ==========================================
+# 1.5. Layered Process Detection Module
+# ==========================================
+$ToolsDir = Join-Path $PSScriptRoot "tools"
+$DetectionModule = Join-Path $ToolsDir "Process-Detection.ps1"
+
+# Attempt to load detection module if available
+$DetectionLoaded = $false
+if (Test-Path $DetectionModule) {
+    try {
+        . $DetectionModule
+        $DetectionLoaded = $true
+    }
+    catch {
+        # Detection module failed to load, will use fallback Mutex guard only
+    }
+}
+
+# ==========================================
 # 2. Configuration & State Paths
 # ==========================================
 $EnvFilePath        = Join-Path $BasePath ".env"
@@ -132,20 +150,52 @@ Invoke-StartupLogArchive
 Invoke-LogRotation
 
 # ==========================================
-# 3. Mutex / Ownership Guard
+# 4. Layered Detection: Is watcher already running?
+# ==========================================
+if ($DetectionLoaded -and (Get-Command 'Test-WatcherIsRunning' -ErrorAction SilentlyContinue)) {
+    try {
+        $detection = Test-WatcherIsRunning -LogFile $LogFile -MutexName "Global\BackrestLiveMonitor_" -HeartbeatFreshSeconds 180
+        
+        if ($detection.IsRunning -and $detection.Confidence -in @('high', 'medium')) {
+            $pidStr = if ($null -ne $detection.ProcessId) { $detection.ProcessId } else { 'unknown' }
+            $ageStr = if ($null -ne $detection.HeartbeatAge) { "$($detection.HeartbeatAge)s" } else { 'N/A' }
+            Write-Log "Watcher already running (PID: $pidStr, confidence: $($detection.Confidence)). Heartbeat age: $ageStr. Signals: $($detection.Signals.Values -join ', ')" "WARN" "Yellow" "Detection"
+            Write-Log "To stop the watcher, create a file named '.stop-livebackup' in $BasePath or use 'Stop-Process -Id $pidStr'" "INFO" "Cyan" "Detection"
+            exit 0
+        } elseif ($detection.IsRunning -and $detection.Confidence -eq 'low') {
+            Write-Log "Uncertain watcher state detected (low confidence). Waiting 3 seconds and rechecking..." "WARN" "Yellow" "Detection"
+            Start-Sleep -Seconds 3
+            $detectionRecheck = Test-WatcherIsRunning -LogFile $LogFile -MutexName "Global\BackrestLiveMonitor_" -HeartbeatFreshSeconds 180
+            if ($detectionRecheck.IsRunning -and $detectionRecheck.Confidence -in @('high', 'medium')) {
+                Write-Log "Watcher confirmed running on recheck (confidence: $($detectionRecheck.Confidence)). Exiting." "WARN" "Yellow" "Detection"
+                exit 0
+            } else {
+                Write-Log "Recheck shows watcher not running (confidence: $($detectionRecheck.Confidence)). Proceeding with startup." "INFO" "Cyan" "Detection"
+            }
+        } else {
+            Write-Log "Layered detection confirms watcher is not running. Safe to proceed." "INFO" "DarkGray" "Detection"
+        }
+    }
+    catch {
+        Write-Log "Detection layer encountered an error: $($_.Exception.Message). Falling back to Mutex guard." "WARN" "Yellow" "Detection"
+    }
+}
+
+# ==========================================
+# 5. Mutex / Ownership Guard (Fallback)
 # ==========================================
 $mutexName = "Global\BackrestLiveMonitor_$env:USERNAME"
 $mutexCreated = $false
 $mutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$mutexCreated)
 
 if (-not $mutexCreated) {
-    Write-Log "Another instance is already running. Exiting to prevent overlapping watchers." "WARN" "Yellow" "Preflight"
+    Write-Log "Another instance is already running (Mutex held). Exiting to prevent overlapping watchers." "WARN" "Yellow" "Preflight"
     exit 0
 }
 
 try {
     # ==========================================
-    # 4. Preflight: Auth & Environment
+    # 6. Preflight: Auth & Environment
     # ==========================================
     $AuthHeader = @{}
     if (Test-Path $EnvFilePath) {
