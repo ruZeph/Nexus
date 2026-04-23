@@ -365,6 +365,15 @@ Select-String -Path logs/runner.log -Pattern "\[RESOURCE\]"
 
 Create one task pointing to the monitor. Add new backup targets to `backup-jobs.json` — do not create separate tasks per job.
 
+Set user environment variables once (cleaner and reusable across task updates):
+
+```powershell
+[Environment]::SetEnvironmentVariable('RCLONE_SYNC_LAUNCHER', 'C:\Path\To\RClone Sync\Launch-Runner.ps1', 'User')
+[Environment]::SetEnvironmentVariable('RCLONE_SYNC_CONFIG_PATH', 'C:\Path\To\RClone Sync\backup-jobs.json', 'User')
+```
+
+If your current shell does not expose `$env:RCLONE_SYNC_*` immediately, use User-scope lookup via `[Environment]::GetEnvironmentVariable(...)` as shown below.
+
 ```powershell
 schtasks /create `
   /tn "Rclone Monitor Runner" `
@@ -373,10 +382,18 @@ schtasks /create `
   /rl HIGHEST `
   /it `
   /f `
-  /tr 'powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File "<INSTALLATION PATH>\Nexus\Sync Scripts\Launch-Runner.ps1" -Mode monitor -TaskScheduler -Silent -IdleTimeSeconds 60'
+  /tr "powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -Command `$launcher=[Environment]::GetEnvironmentVariable('RCLONE_SYNC_LAUNCHER','User'); `$config=[Environment]::GetEnvironmentVariable('RCLONE_SYNC_CONFIG_PATH','User'); if([string]::IsNullOrWhiteSpace(`$launcher) -or [string]::IsNullOrWhiteSpace(`$config)){ throw 'Missing RCLONE_SYNC_* user environment variables.' }; & `$launcher -ConfigPath `$config -Mode monitor -TaskScheduler -Silent -IdleTimeSeconds 60"
 ```
 
-IMP: Replace `<INSTALLATION PATH>` with Script installtion root.
+IMP: Confirm both environment variables are set for the same user account that runs the scheduled task.
+
+Quick local validation from a PowerShell terminal:
+
+```powershell
+$launcher = [Environment]::GetEnvironmentVariable('RCLONE_SYNC_LAUNCHER','User')
+$config = [Environment]::GetEnvironmentVariable('RCLONE_SYNC_CONFIG_PATH','User')
+& $launcher -ConfigPath $config -Mode monitor -TaskScheduler -Silent -IdleTimeSeconds 60
+```
 
 Flags: logon-triggered · hidden window · `-TaskScheduler` for scheduler-specific behavior · `-Silent` for minimal console output · 60-second idle debounce.
 

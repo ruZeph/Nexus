@@ -114,6 +114,15 @@ function Resolve-ConfigPath {
     param([AllowNull()][string]$Path)
 
     if ([string]::IsNullOrWhiteSpace($Path)) {
+        $envConfigPath = [string]$env:RCLONE_SYNC_CONFIG_PATH
+        if (-not [string]::IsNullOrWhiteSpace($envConfigPath)) {
+            if ([System.IO.Path]::IsPathRooted($envConfigPath)) {
+                return $envConfigPath
+            }
+
+            return (Join-Path $PSScriptRoot $envConfigPath)
+        }
+
         return (Join-Path $PSScriptRoot 'backup-jobs.json')
     }
 
