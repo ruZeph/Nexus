@@ -403,6 +403,85 @@ function Read-StopSignalReason {
     }
 }
 
+function ConvertFrom-UnixMilliseconds {
+    param($Value)
+
+    if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
+        return $null
+    }
+
+    try {
+        return [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$Value).ToLocalTime().DateTime
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-LatestBackrestOperation {
+    param(
+        [Parameter(Mandatory = $true)][string]$PlanId,
+        [Parameter(Mandatory = $true)][string]$Endpoint,
+        [hashtable]$Headers = @{}
+    )
+
+    try {
+        $uriRoot = $Endpoint -replace '/v1\.Backrest/Backup$', ''
+        $selectorPayload = @{ selector = @{ planId = $PlanId } } | ConvertTo-Json -Compress
+        $restParams = @{
+            Uri         = "$uriRoot/v1.Backrest/GetOperations"
+            Method      = 'Post'
+            Body        = $selectorPayload
+            ContentType = 'application/json'
+            TimeoutSec  = 5
+        }
+
+        if ($Headers.Count -gt 0) {
+            $restParams.Headers = $Headers
+        }
+
+        $response = Invoke-RestMethod @restParams
+        $operations = @($response.operations)
+        if ($operations.Count -eq 0) {
+            return $null
+        }
+
+        return ($operations | Sort-Object {
+            $startTime = ConvertFrom-UnixMilliseconds $_.unixTimeStartMs
+            if ($null -eq $startTime) { return [datetime]::MinValue }
+            return $startTime
+        } -Descending | Select-Object -First 1)
+    }
+    catch {
+        return $null
+    }
+}
+
+function Wait-BackrestOperationObservation {
+    param(
+        [Parameter(Mandatory = $true)][string]$PlanId,
+        [Parameter(Mandatory = $true)][datetime]$Since,
+        [Parameter(Mandatory = $true)][string]$Endpoint,
+        [hashtable]$Headers = @{},
+        [int]$TimeoutSeconds = 8
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $latestOperation = Get-LatestBackrestOperation -PlanId $PlanId -Endpoint $Endpoint -Headers $Headers
+        if ($null -ne $latestOperation) {
+            $startTime = ConvertFrom-UnixMilliseconds $latestOperation.unixTimeStartMs
+            if ($null -ne $startTime -and $startTime -ge $Since.AddSeconds(-2)) {
+                return $latestOperation
+            }
+        }
+
+        Start-Sleep -Milliseconds 750
+    } while ((Get-Date) -lt $deadline)
+
+    return $null
+}
+
 if ($TestMode) {
     Write-Log 'TEST MODE ENABLED - API calls MOCKED. Idle timeout reduced.' 'INFO' 'Magenta' 'Preflight'
 }
@@ -501,10 +580,12 @@ try {
 
     $plans = foreach ($p in @($plansRaw)) {
         if (-not $p.id) { continue }
+        $hasName = $p.PSObject.Properties.Name -contains 'name'
+        $hasPaths = $p.PSObject.Properties.Name -contains 'paths'
         [pscustomobject]@{
             id    = $p.id
-            name  = if ($null -ne $p.name) { $p.name } else { $p.id }
-            paths = if ($null -ne $p.paths) { @($p.paths) } else { @() }
+            name  = if ($hasName -and -not [string]::IsNullOrWhiteSpace([string]$p.name)) { $p.name } else { $p.id }
+            paths = if ($hasPaths -and $null -ne $p.paths) { @($p.paths) } else { @() }
         }
     }
 
@@ -692,6 +773,7 @@ try {
 
             $payload = @{ value = $planId } | ConvertTo-Json -Compress
             $apiSuccess = $false
+            $requestStartedAt = Get-Date
             if ($global:IsTestMode) {
                 Write-Log "API call MOCKED. Job skipped for batch [$batchId]." 'TEST' 'Magenta' $state.Name
                 $apiSuccess = $true
@@ -710,8 +792,9 @@ try {
                 }
 
                 try {
-                    Invoke-RestMethod @restParams | Out-Null
-                    Write-Log "Job successfully dispatched to background processor for batch [$batchId]." 'SUCCESS' 'Green' $state.Name
+                    $apiResponse = Invoke-RestMethod @restParams
+                    $responseJson = try { $apiResponse | ConvertTo-Json -Compress -Depth 5 } catch { '{}' }
+                    Write-Log "Backrest accepted trigger request for batch [$batchId]. Response=[$responseJson]" 'INFO' 'Green' $state.Name
                     $apiSuccess = $true
                 }
                 catch {
@@ -722,7 +805,7 @@ try {
                         ($exceptionType -eq 'HttpRequestException' -and $exceptionMessage -match 'Timeout')
 
                     if ($isTimeoutAccepted) {
-                        Write-Log "Job successfully dispatched to background processor for batch [$batchId]." 'SUCCESS' 'Green' $state.Name
+                        Write-Log "Backrest trigger request timed out for batch [$batchId], but Backrest may continue it in the background." 'WARN' 'Yellow' $state.Name
                         $apiSuccess = $true
                     }
                     else {
@@ -734,6 +817,19 @@ try {
             }
 
             if (-not $apiSuccess) { continue }
+
+            if (-not $global:IsTestMode) {
+                $observedOperation = Wait-BackrestOperationObservation -PlanId $planId -Since $requestStartedAt -Endpoint $BackrestEndpoint -Headers $AuthHeader -TimeoutSeconds 8
+                if ($null -ne $observedOperation) {
+                    $operationId = if ($null -ne $observedOperation.id) { $observedOperation.id } else { 'unknown' }
+                    $flowId = if ($null -ne $observedOperation.flowId) { $observedOperation.flowId } else { 'unknown' }
+                    $operationStatus = if ($null -ne $observedOperation.status) { $observedOperation.status } else { 'unknown' }
+                    Write-Log "Backrest operation observed for batch [$batchId]. OperationId=[$operationId] FlowId=[$flowId] Status=[$operationStatus]" 'SUCCESS' 'Green' $state.Name
+                }
+                else {
+                    Write-Log "Backrest accepted batch [$batchId], but GetOperations did not show a matching operation within 8s." 'WARN' 'Yellow' $state.Name
+                }
+            }
 
             $state.LastBatchId = $batchId
             $state.LastBatchEventCount = $events
