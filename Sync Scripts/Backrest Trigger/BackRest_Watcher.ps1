@@ -8,7 +8,7 @@ param (
 $BasePath           = $PSScriptRoot
 $EnvFilePath        = Join-Path $BasePath ".env"
 $BackrestConfigPath = "$env:APPDATA\backrest\config.json"
-$BackrestEndpoint   = "http://localhost:9898/v1.Backrest/Backup"
+$BackrestEndpoint   = "http://localhost:9090/v1.Backrest/Backup"
 $IdleTimeSeconds    = if ($TestMode) { 10 } else { 120 }
 $global:IsTestMode  = $TestMode
 
