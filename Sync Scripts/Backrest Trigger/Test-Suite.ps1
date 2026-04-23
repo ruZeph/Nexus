@@ -23,7 +23,11 @@ $MockAppData   = Join-Path $TestWorkspace "AppData"
 $MockConfigDir = Join-Path $MockAppData "backrest"
 $MockConfig    = Join-Path $MockConfigDir "config.json"
 $TargetFolder1 = Join-Path $TestWorkspace "Target_Folder_A"
-$LogFile       = Join-Path $TestWorkspace "runner.log"
+$StdoutLog     = Join-Path $TestWorkspace "runner-stdout.log"
+$ServiceLog    = Join-Path $PSScriptRoot "logs\runner.log"
+$ServiceErrorLog = Join-Path $PSScriptRoot "logs\runner-error.log"
+$StateFile     = Join-Path $PSScriptRoot ".state\trigger-state.json"
+$RuntimeStateFile = Join-Path $PSScriptRoot ".state\runtime-state.json"
 $TestUsername  = "TestUser_$(Get-Random)"
 
 Write-Host "Setting up test workspace at $TestWorkspace..." -ForegroundColor Cyan
@@ -48,16 +52,30 @@ Set-Content -Path $MockConfig -Value $mockJson
 # 2. Helper Functions
 # ==========================================
 function Assert-LogContains {
-    param([string]$Pattern, [int]$TimeoutSeconds = 15)
+    param(
+        [string]$Pattern,
+        [int]$TimeoutSeconds = 15,
+        [string]$LogPath = $ServiceLog
+    )
     $sw = [Diagnostics.Stopwatch]::StartNew()
     while ($sw.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
-        if (Test-Path $LogFile) {
-            $logs = Get-Content $LogFile -ErrorAction SilentlyContinue
+        if (Test-Path $LogPath) {
+            $logs = Get-Content $LogPath -ErrorAction SilentlyContinue
             if ($logs -match $Pattern) { return $true }
         }
         Start-Sleep -Milliseconds 500
     }
     return $false
+}
+
+function Get-LogMatchCount {
+    param(
+        [string]$Pattern,
+        [string]$LogPath = $ServiceLog
+    )
+
+    if (-not (Test-Path $LogPath)) { return 0 }
+    return @((Get-Content $LogPath -ErrorAction SilentlyContinue) | Select-String -Pattern $Pattern).Count
 }
 
 # ==========================================
@@ -71,13 +89,13 @@ Write-Host "Launching script in background test mode..." -ForegroundColor Cyan
 $psArgs = "-NoProfile -ExecutionPolicy Bypass -Command `" `
     `$env:APPDATA = '$MockAppData'; `
     `$env:USERNAME = '$TestUsername'; `
-    & '$ScriptToTest' -TestMode *>&1 | Out-File -FilePath '$LogFile' -Encoding UTF8 `" "
+    & '$ScriptToTest' -TestMode *>&1 | Out-File -FilePath '$StdoutLog' -Encoding UTF8 `" "
 
 $process = Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -PassThru -WindowStyle Hidden
 
 # Wait for startup
-if (-not (Assert-LogContains "Waiting for idle bounds")) {
-    Write-Host "[FAIL] Script failed to initialize or start watchers. Check $LogFile for details." -ForegroundColor Red
+if (-not (Assert-LogContains "Waiting for idle bounds" 20 $ServiceLog)) {
+    Write-Host "[FAIL] Script failed to initialize or start watchers. Check $ServiceLog for details." -ForegroundColor Red
     Stop-Process -Id $process.Id -Force
     exit 1
 }
@@ -114,9 +132,11 @@ try {
     # TEST 2: Noise Filtering
     # ---------------------------------------------------------
     Write-Host "`nRunning Test 2: Noise Filtering (.tmp files)..."
+    $queueCountBeforeNoise = Get-LogMatchCount "Coalesced events queued for \[Test-Plan-A\]" $ServiceLog
     New-Item -ItemType File -Path (Join-Path $TargetFolder1 "ignore_me.tmp") | Out-Null
     Start-Sleep -Seconds 3
-    if (-not (Get-Content $LogFile -ErrorAction SilentlyContinue | Select-String "Coalesced events queued")) {
+    $queueCountAfterNoise = Get-LogMatchCount "Coalesced events queued for \[Test-Plan-A\]" $ServiceLog
+    if ($queueCountAfterNoise -eq $queueCountBeforeNoise) {
         Write-Host "[PASS] .tmp file was successfully ignored." -ForegroundColor Green
         $TestsPassed++
     } else {
@@ -128,6 +148,7 @@ try {
     # TEST 3: Event Coalescing
     # ---------------------------------------------------------
     Write-Host "`nRunning Test 3: Event Coalescing..."
+    $queueCountBeforeBurst = Get-LogMatchCount "Coalesced events queued for \[Test-Plan-A\]" $ServiceLog
     $dataPath = Join-Path $TargetFolder1 "data.txt"
     for ($i=1; $i -le 15; $i++) {
         $written = $false
@@ -141,7 +162,9 @@ try {
             }
         }
     }
-    if (Assert-LogContains "Coalesced events queued for \[Test-Plan-A\]" 5) {
+    $queueLogged = Assert-LogContains "Coalesced events queued for \[Test-Plan-A\]" 8 $ServiceLog
+    $queueCountAfterBurst = Get-LogMatchCount "Coalesced events queued for \[Test-Plan-A\]" $ServiceLog
+    if ($queueLogged -and $queueCountAfterBurst -gt $queueCountBeforeBurst) {
         Write-Host "[PASS] Multiple file changes successfully coalesced into queue." -ForegroundColor Green
         $TestsPassed++
     } else {
@@ -154,7 +177,7 @@ try {
     # ---------------------------------------------------------
     Write-Host "`nRunning Test 4: Idle Debounce & API Trigger..."
     Write-Host "Waiting up to 25s for the 10-second idle debounce to elapse..." -ForegroundColor DarkGray
-    if (Assert-LogContains "Batch flush: Triggering \[Mock Database Backup\] covering .* coalesced event" 25) {
+    if (Assert-LogContains "Batch flush: Triggering \[Mock Database Backup\] covering .* coalesced event" 25 $ServiceLog) {
         Write-Host "[PASS] Batch successfully flushed after idle debounce." -ForegroundColor Green
         $TestsPassed++
     } else {
@@ -166,10 +189,9 @@ try {
     # TEST 5: Idempotent State Persistence
     # ---------------------------------------------------------
     Write-Host "`nRunning Test 5: Idempotent State Verification..."
-    $ExpectedStateFile = Join-Path $PSScriptRoot ".state\trigger-state.json"
-    if (Test-Path $ExpectedStateFile) {
-        $stateContent = Get-Content $ExpectedStateFile -Raw | ConvertFrom-Json
-        if ($null -ne $stateContent."Test-Plan-A".LastRun) {
+    if (Test-Path $StateFile) {
+        $stateContent = Get-Content $StateFile -Raw | ConvertFrom-Json
+        if ($null -ne $stateContent.Plans."Test-Plan-A".LastRun -and (Test-Path $RuntimeStateFile)) {
             Write-Host "[PASS] State file created and LastRun timestamp recorded." -ForegroundColor Green
             $TestsPassed++
         } else {
@@ -187,7 +209,7 @@ try {
     Write-Host "`nRunning Test 6: Safe-Stop Signaling..."
     $StopFile = Join-Path $PSScriptRoot ".stop-livebackup"
     New-Item -ItemType File -Path $StopFile -Force | Out-Null
-    if (Assert-LogContains "Safe stop signal detected.*Shutting down cleanly" 15) {
+    if (Assert-LogContains "Safe stop signal detected.*Shutting down cleanly" 15 $ServiceLog) {
         Write-Host "[PASS] Script detected stop signal and shut down gracefully." -ForegroundColor Green
         $TestsPassed++
     } else {
@@ -206,8 +228,8 @@ try {
     if (Test-Path $TestWorkspace) { Remove-Item -Path $TestWorkspace -Recurse -Force -ErrorAction SilentlyContinue }
     
     # Do not delete the user's real state dir, but clean up the mocked test entry if possible
-    $ExpectedStateFile = Join-Path $PSScriptRoot ".state\trigger-state.json"
-    if (Test-Path $ExpectedStateFile) { Remove-Item $ExpectedStateFile -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $StateFile) { Remove-Item $StateFile -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $RuntimeStateFile) { Remove-Item $RuntimeStateFile -Force -ErrorAction SilentlyContinue }
     
     $StopFile = Join-Path $PSScriptRoot ".stop-livebackup"
     if (Test-Path $StopFile) { Remove-Item $StopFile -Force -ErrorAction SilentlyContinue }

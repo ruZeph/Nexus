@@ -3,6 +3,9 @@
 # Layered detection strategy: process table + command line + heartbeat + mutex + scheduler state
 # ==========================================
 
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
 function Get-ProcessCommandLine {
     param([Parameter(Mandatory = $true)][int]$ProcessId)
     
@@ -66,8 +69,12 @@ function Get-WatcherProcesses {
 function Get-MutexState {
     param([string]$MutexName = 'Global\BackrestLiveMonitor_')
     
-    # Append username if not already present
-    if (-not $MutexName.Contains($env:USERNAME)) {
+    # Preserve fully-qualified mutex names used by the daemon. Legacy callers can still
+    # pass the old prefix and let us append the username.
+    if (
+        -not ($MutexName -match '^(Global|Local)\\') -and
+        -not $MutexName.Contains($env:USERNAME)
+    ) {
         $MutexName = "$MutexName$env:USERNAME"
     }
     
@@ -104,6 +111,47 @@ function Get-MutexState {
             $mutex.Dispose()
         }
     }
+}
+
+function Get-RuntimeStateStatus {
+    param(
+        [Parameter(Mandatory = $true)][string]$RuntimeStateFile,
+        [int]$FreshWithinSeconds = 180
+    )
+
+    $result = [PSCustomObject]@{
+        Found = $false
+        IsFresh = $false
+        Status = $null
+        Timestamp = $null
+        ProcessId = $null
+        InstanceId = $null
+    }
+
+    if (-not (Test-Path -LiteralPath $RuntimeStateFile)) {
+        return $result
+    }
+
+    try {
+        $payload = Get-Content -LiteralPath $RuntimeStateFile -Raw -ErrorAction Stop | ConvertFrom-Json
+        $result.Found = $true
+        $result.Status = [string]$payload.Status
+        $result.ProcessId = if ($null -ne $payload.ProcessId) { [int]$payload.ProcessId } else { $null }
+        $result.InstanceId = [string]$payload.InstanceId
+
+        if ($null -ne $payload.UpdatedAt -and -not [string]::IsNullOrWhiteSpace([string]$payload.UpdatedAt)) {
+            $parsed = $null
+            if ([datetime]::TryParse([string]$payload.UpdatedAt, [ref]$parsed)) {
+                $result.Timestamp = $parsed
+                $ageSeconds = ((Get-Date) - $parsed).TotalSeconds
+                $result.IsFresh = ($result.Status -eq 'running' -and $ageSeconds -ge 0 -and $ageSeconds -le $FreshWithinSeconds)
+            }
+        }
+    }
+    catch {
+    }
+
+    return $result
 }
 
 function Get-HeartbeatStatus {
@@ -215,6 +263,7 @@ function Test-WatcherIsRunning {
         [Parameter(Mandatory = $true)][string]$LogFile,
         [string]$MutexName = 'Global\BackrestLiveMonitor_',
         [int]$HeartbeatFreshSeconds = 180,
+        [string]$RuntimeStateFile = $null,
         [string]$ResourceLogDir = $null,
         [hashtable]$ResourceState = @{}
     )
@@ -260,6 +309,7 @@ function Test-WatcherIsRunning {
     $signals = @{
         ProcessTableMatch = $false
         HeartbeatFresh = $false
+        RuntimeFresh = $false
         MutexBusy = $false
         CommandLineValid = $false
     }
@@ -287,6 +337,22 @@ function Test-WatcherIsRunning {
             $detectedPid = $heartbeat.ProcessId
         }
     }
+
+    # Signal 2.5: runtime heartbeat/state file
+    if (-not [string]::IsNullOrWhiteSpace($RuntimeStateFile)) {
+        $runtimeState = Get-RuntimeStateStatus -RuntimeStateFile $RuntimeStateFile -FreshWithinSeconds $HeartbeatFreshSeconds
+        if ($runtimeState.Found -and $runtimeState.IsFresh) {
+            $signals.RuntimeFresh = $true
+
+            if ($null -eq $detectedPid -and $null -ne $runtimeState.ProcessId) {
+                $detectedPid = $runtimeState.ProcessId
+            }
+
+            if ($null -eq $heartbeatAge -and $null -ne $runtimeState.Timestamp) {
+                $heartbeatAge = [int]((Get-Date) - $runtimeState.Timestamp).TotalSeconds
+            }
+        }
+    }
     
     # Signal 3: Mutex state
     $mutexState = Get-MutexState -MutexName $MutexName
@@ -308,19 +374,23 @@ function Test-WatcherIsRunning {
     $isRunning = $false
     $confidence = 'low'
     
-    # At least 2 signals = likely running
-    # At least 3 signals = high confidence running
+    # At least 2 corroborating signals = likely running.
+    # RuntimeFresh is treated similarly to HeartbeatFresh because it is an explicit
+    # persisted daemon heartbeat written outside the event callbacks.
     if ($signalCount -ge 3) {
         $isRunning = $true
         $confidence = 'high'
     }
     elseif ($signalCount -eq 2) {
-        # Two signals: if it includes heartbeat, more likely to be running
-        if ($signals.HeartbeatFresh -and ($signals.ProcessTableMatch -or $signals.MutexBusy)) {
+        if (($signals.HeartbeatFresh -or $signals.RuntimeFresh) -and ($signals.ProcessTableMatch -or $signals.MutexBusy)) {
             $isRunning = $true
             $confidence = 'medium'
         }
         elseif ($signals.ProcessTableMatch -and $signals.CommandLineValid) {
+            $isRunning = $true
+            $confidence = 'high'
+        }
+        elseif ($signals.RuntimeFresh -and $signals.MutexBusy) {
             $isRunning = $true
             $confidence = 'high'
         }
@@ -470,6 +540,7 @@ try {
         'Get-ProcessStartTime',
         'Get-WatcherProcesses',
         'Get-MutexState',
+        'Get-RuntimeStateStatus',
         'Get-HeartbeatStatus',
         'Resolve-LiveWatcherPid',
         'Get-WatcherProcessDetails',
