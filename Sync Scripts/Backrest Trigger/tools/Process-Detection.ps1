@@ -533,6 +533,46 @@ function Stop-WatcherProcess {
     }
 }
 
+function Write-ProcessDetectionSummary {
+    param(
+        [string]$LogFile = (Join-Path (Split-Path -Parent $PSScriptRoot) 'logs\runner.log'),
+        [string]$RuntimeStateFile = (Join-Path (Split-Path -Parent $PSScriptRoot) '.state\runtime-state.json')
+    )
+
+    $watcherProcesses = @(Get-WatcherProcesses)
+    $detection = $null
+    if (Test-Path -LiteralPath $LogFile) {
+        try {
+            $detection = Test-WatcherIsRunning -LogFile $LogFile -RuntimeStateFile $RuntimeStateFile -MutexName 'Local\BackrestLiveMonitor_'
+        }
+        catch {
+        }
+    }
+
+    Write-Output 'Backrest Process Detection Utility'
+    Write-Output ("Log file: {0}" -f $LogFile)
+    Write-Output ("Runtime state: {0}" -f $RuntimeStateFile)
+    Write-Output ("Matching watcher processes: {0}" -f $watcherProcesses.Count)
+
+    if ($null -ne $detection) {
+        Write-Output ("Watcher running: {0}" -f $detection.IsRunning)
+        Write-Output ("Confidence: {0}" -f $detection.Confidence)
+        Write-Output ("Detected PID: {0}" -f $(if ($null -ne $detection.ProcessId) { $detection.ProcessId } else { 'n/a' }))
+
+        $signalSummary = @($detection.Signals.GetEnumerator() | Sort-Object Name | ForEach-Object { "{0}={1}" -f $_.Name, $_.Value }) -join ', '
+        if (-not [string]::IsNullOrWhiteSpace($signalSummary)) {
+            Write-Output ("Signals: {0}" -f $signalSummary)
+        }
+    }
+    else {
+        Write-Output 'Watcher detection: no active monitor could be confirmed.'
+    }
+
+    foreach ($entry in $watcherProcesses) {
+        Write-Output ("PID {0} | {1}" -f $entry.ProcessId, $entry.CommandLine)
+    }
+}
+
 # Export public functions (only when run as a module)
 try {
     Export-ModuleMember -Function @(
@@ -553,4 +593,8 @@ try {
 catch {
     # Export-ModuleMember only works when script is imported as a module
     # If dot-sourced, this will fail silently and functions are still available
+}
+
+if ($MyInvocation.InvocationName -ne '.') {
+    Write-ProcessDetectionSummary
 }

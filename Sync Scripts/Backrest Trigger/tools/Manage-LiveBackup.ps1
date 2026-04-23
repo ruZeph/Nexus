@@ -1,6 +1,7 @@
 param(
     [string]$LogsPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'logs'),
-    [string]$TaskName = 'Backrest Live Backup Monitor'
+    [string]$TaskName = 'Backrest Live Backup Monitor',
+    [switch]$PreviewOnly
 )
 
 Set-StrictMode -Version Latest
@@ -130,20 +131,20 @@ function Get-LiveMonitorDetails {
         }
     }
 
-    $pid = $null
+    $livePid = $null
     if ($null -ne $runtimeState -and $null -ne $runtimeState.ProcessId) {
-        $pid = [int]$runtimeState.ProcessId
+        $livePid = [int]$runtimeState.ProcessId
     }
     else {
         $resolvedPid = Resolve-LiveWatcherPid -LogFile (Join-Path $LogsPath 'runner.log')
         if ($null -ne $resolvedPid) {
-            $pid = [int]$resolvedPid
+            $livePid = [int]$resolvedPid
         }
     }
 
     $processDetails = $null
-    if ($null -ne $pid) {
-        $processDetails = Get-WatcherProcessDetails -ProcessId $pid
+    if ($null -ne $livePid) {
+        $processDetails = Get-WatcherProcessDetails -ProcessId $livePid
     }
 
     return [pscustomobject]@{
@@ -186,6 +187,33 @@ function Stop-ProcessTree {
 
 try {
     New-Item -ItemType Directory -Force -Path $LogsPath | Out-Null
+
+    if ($PreviewOnly) {
+        Clear-Host
+        Write-Host 'Backrest Live Backup Manager' -ForegroundColor White
+        Write-Host "Logs: $LogsPath" -ForegroundColor DarkGray
+        Write-Host ''
+
+        $runnerLog = Join-Path $LogsPath 'runner.log'
+        $detection = Test-WatcherIsRunning -LogFile $runnerLog -RuntimeStateFile $runtimeStatePath -MutexName 'Local\BackrestLiveMonitor_'
+        $liveMonitor = Get-LiveMonitorDetails
+
+        Write-Info ("Watcher detection: running={0} confidence={1} pid={2}" -f $detection.IsRunning, $detection.Confidence, $(if ($null -ne $detection.ProcessId) { $detection.ProcessId } else { 'n/a' }))
+
+        if ($null -ne $liveMonitor.RuntimeState) {
+            Write-Info ("Runtime heartbeat: status={0} updated={1}" -f $liveMonitor.RuntimeState.Status, $liveMonitor.RuntimeState.UpdatedAt)
+        }
+
+        if ($null -ne $liveMonitor.ProcessDetails) {
+            Write-Info ("Live monitor PID: {0}" -f $liveMonitor.ProcessDetails.ProcessId)
+        }
+        else {
+            Write-Warn 'No live monitor process details found.'
+        }
+
+        Write-Info 'Preview only mode complete.'
+        return
+    }
 
     while ($true) {
         Clear-Host

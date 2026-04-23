@@ -4,6 +4,10 @@
 
 $ErrorActionPreference = "Stop"
 $ScriptToTest = Join-Path $PSScriptRoot "Start-LiveBackup.ps1"
+$ToolsDir = Join-Path $PSScriptRoot 'tools'
+$DetectionModule = Join-Path $ToolsDir 'Process-Detection.ps1'
+$OperationModule = Join-Path $ToolsDir 'Backrest-Operation.ps1'
+$ManagerScript = Join-Path $ToolsDir 'Manage-LiveBackup.ps1'
 
 # Fallback in case the script is named BackRest_Watcher.ps1
 if (-not (Test-Path $ScriptToTest)) {
@@ -25,7 +29,6 @@ $MockConfig    = Join-Path $MockConfigDir "config.json"
 $TargetFolder1 = Join-Path $TestWorkspace "Target_Folder_A"
 $StdoutLog     = Join-Path $TestWorkspace "runner-stdout.log"
 $ServiceLog    = Join-Path $PSScriptRoot "logs\runner.log"
-$ServiceErrorLog = Join-Path $PSScriptRoot "logs\runner-error.log"
 $StateFile     = Join-Path $PSScriptRoot ".state\trigger-state.json"
 $RuntimeStateFile = Join-Path $PSScriptRoot ".state\runtime-state.json"
 $TestUsername  = "TestUser_$(Get-Random)"
@@ -33,6 +36,10 @@ $TestUsername  = "TestUser_$(Get-Random)"
 Write-Host "Setting up test workspace at $TestWorkspace..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Path $MockConfigDir -Force | Out-Null
 New-Item -ItemType Directory -Path $TargetFolder1 -Force | Out-Null
+Remove-Item -Path $ServiceLog -Force -ErrorAction SilentlyContinue
+Remove-Item -Path (Join-Path $PSScriptRoot 'logs\runner-error.log') -Force -ErrorAction SilentlyContinue
+Remove-Item -Path $StateFile -Force -ErrorAction SilentlyContinue
+Remove-Item -Path $RuntimeStateFile -Force -ErrorAction SilentlyContinue
 
 # Create Mock Backrest Config
 $mockJson = @"
@@ -77,6 +84,61 @@ function Get-LogMatchCount {
     if (-not (Test-Path $LogPath)) { return 0 }
     return @((Get-Content $LogPath -ErrorAction SilentlyContinue) | Select-String -Pattern $Pattern).Count
 }
+
+function Invoke-PowerShellCapture {
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptPath,
+        [AllowEmptyString()][string]$Arguments = '',
+        [Parameter(Mandatory = $true)][string]$OutputPath,
+        [int]$TimeoutSeconds = 20
+    )
+
+    $commandText = "& '$ScriptPath' $Arguments *>&1 | Out-File -FilePath '$OutputPath' -Encoding UTF8"
+    $captureArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $commandText)
+    $process = Start-Process -FilePath 'powershell.exe' -ArgumentList $captureArgs -PassThru -WindowStyle Hidden
+
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while (-not $process.HasExited -and $sw.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+        Start-Sleep -Milliseconds 250
+        $process.Refresh()
+    }
+
+    if (-not $process.HasExited) {
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    }
+
+    if (Test-Path $OutputPath) {
+        return Get-Content $OutputPath -Raw -ErrorAction SilentlyContinue
+    }
+
+    return ''
+}
+
+function Stop-StaleTestMonitors {
+    param([Parameter(Mandatory = $true)][string]$ScriptPath)
+
+    try {
+        $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.Name -in @('powershell.exe', 'pwsh.exe') -and
+            [string]$_.CommandLine -match [regex]::Escape($ScriptPath) -and
+            [string]$_.CommandLine -match '-TestMode'
+        })
+
+        foreach ($process in $processes) {
+            try {
+                Stop-Process -Id [int]$process.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+            catch {
+            }
+        }
+    }
+    catch {
+    }
+}
+
+. $OperationModule
+
+Stop-StaleTestMonitors -ScriptPath $ScriptToTest
 
 # ==========================================
 # 3. Launch the Monitor in a Sandbox
@@ -186,12 +248,59 @@ try {
     }
 
     # ---------------------------------------------------------
-    # TEST 5: Idempotent State Persistence
+    # TEST 5: Backrest Operation Final-Status Helper
     # ---------------------------------------------------------
-    Write-Host "`nRunning Test 5: Idempotent State Verification..."
+    Write-Host "`nRunning Test 5: Backrest Operation Final-Status Helper..."
+    $fakeOperations = @(
+        [pscustomobject]@{
+            id = 'op-1'
+            flowId = 'flow-1'
+            status = 'running'
+            unixTimeStartMs = [DateTimeOffset]::UtcNow.AddSeconds(-30).ToUnixTimeMilliseconds()
+        },
+        [pscustomobject]@{
+            id = 'op-1'
+            flowId = 'flow-1'
+            status = 'completed'
+            unixTimeStartMs = [DateTimeOffset]::UtcNow.AddSeconds(-30).ToUnixTimeMilliseconds()
+            unixTimeEndMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        }
+    )
+    $operationEnumerator = $fakeOperations.GetEnumerator()
+    $finalStatus = Wait-BackrestOperationFinalStatus -OperationFetcher {
+        param(
+            [string]$PlanId,
+            [string]$Endpoint,
+            [hashtable]$Headers
+        )
+
+        if ($operationEnumerator.MoveNext()) {
+            return $operationEnumerator.Current
+        }
+
+        return $fakeOperations[-1]
+    } -PlanId 'Test-Plan-A' -Since (Get-Date).AddMinutes(-1) -Endpoint 'http://localhost:9900' -TimeoutSeconds 5 -PollIntervalSeconds 1
+
+    if ($null -ne $finalStatus -and $finalStatus.Outcome -eq 'success' -and $finalStatus.RawStatus -eq 'completed') {
+        Write-Host "[PASS] Final-status wait helper returned a terminal success result." -ForegroundColor Green
+        $TestsPassed++
+    } else {
+        Write-Host "[FAIL] Final-status wait helper did not return the expected result." -ForegroundColor Red
+        $TestsFailed++
+    }
+
+    # ---------------------------------------------------------
+    # TEST 6: Idempotent State Persistence
+    # ---------------------------------------------------------
+    Write-Host "`nRunning Test 6: Idempotent State Verification..."
     if (Test-Path $StateFile) {
         $stateContent = Get-Content $StateFile -Raw | ConvertFrom-Json
-        if ($null -ne $stateContent.Plans."Test-Plan-A".LastRun -and (Test-Path $RuntimeStateFile)) {
+        $planState = $null
+        if ($null -ne $stateContent.Plans -and $stateContent.Plans.PSObject.Properties.Name -contains 'Test-Plan-A') {
+            $planState = $stateContent.Plans.PSObject.Properties['Test-Plan-A'].Value
+        }
+
+        if ($null -ne $planState -and $null -ne $planState.LastRun -and (Test-Path $RuntimeStateFile)) {
             Write-Host "[PASS] State file created and LastRun timestamp recorded." -ForegroundColor Green
             $TestsPassed++
         } else {
@@ -204,9 +313,9 @@ try {
     }
 
     # ---------------------------------------------------------
-    # TEST 6: Safe Stop Signaling
+    # TEST 7: Safe Stop Signaling
     # ---------------------------------------------------------
-    Write-Host "`nRunning Test 6: Safe-Stop Signaling..."
+    Write-Host "`nRunning Test 7: Safe-Stop Signaling..."
     $StopFile = Join-Path $PSScriptRoot ".stop-livebackup"
     New-Item -ItemType File -Path $StopFile -Force | Out-Null
     if (Assert-LogContains "Safe stop signal detected.*Shutting down cleanly" 15 $ServiceLog) {
@@ -214,6 +323,34 @@ try {
         $TestsPassed++
     } else {
         Write-Host "[FAIL] Script ignored stop signal." -ForegroundColor Red
+        $TestsFailed++
+    }
+
+    # ---------------------------------------------------------
+    # TEST 8: Process Detection Direct Output
+    # ---------------------------------------------------------
+    Write-Host "`nRunning Test 8: Process Detection Direct Output..."
+    $processDetectionOutput = Join-Path $TestWorkspace 'process-detection.out'
+    $processDetectionText = Invoke-PowerShellCapture -ScriptPath $DetectionModule -Arguments '' -OutputPath $processDetectionOutput -TimeoutSeconds 10
+    if ($processDetectionText -match 'Backrest Process Detection Utility' -and $processDetectionText -match 'Matching watcher processes') {
+        Write-Host "[PASS] Process-detection utility wrote useful direct-run output." -ForegroundColor Green
+        $TestsPassed++
+    } else {
+        Write-Host "[FAIL] Process-detection utility did not emit the expected output." -ForegroundColor Red
+        $TestsFailed++
+    }
+
+    # ---------------------------------------------------------
+    # TEST 9: Manager Preview Output
+    # ---------------------------------------------------------
+    Write-Host "`nRunning Test 9: Manager Preview Output..."
+    $managerPreviewOutput = Join-Path $TestWorkspace 'manager-preview.out'
+    $managerPreviewText = Invoke-PowerShellCapture -ScriptPath $ManagerScript -Arguments '-PreviewOnly' -OutputPath $managerPreviewOutput -TimeoutSeconds 10
+    if ($managerPreviewText -match 'Backrest Live Backup Manager' -and $managerPreviewText -notmatch 'Cannot overwrite variable PID') {
+        Write-Host "[PASS] Manager preview mode ran without the PID collision." -ForegroundColor Green
+        $TestsPassed++
+    } else {
+        Write-Host "[FAIL] Manager preview mode still hit the PID collision or emitted no output." -ForegroundColor Red
         $TestsFailed++
     }
 

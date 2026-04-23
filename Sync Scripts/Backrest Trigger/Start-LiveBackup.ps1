@@ -18,6 +18,7 @@ $EnvFilePath           = Join-Path $BasePath '.env'
 $StopSignalFile        = Join-Path $BasePath '.stop-livebackup'
 $ToolsDir              = Join-Path $BasePath 'tools'
 $DetectionModule       = Join-Path $ToolsDir 'Process-Detection.ps1'
+$OperationModule       = Join-Path $ToolsDir 'Backrest-Operation.ps1'
 $BackrestConfigPath    = Join-Path $env:APPDATA 'backrest\config.json'
 $BackrestEndpoint      = if ($env:BACKREST_ENDPOINT) { $env:BACKREST_ENDPOINT } else { 'http://localhost:9900/v1.Backrest/Backup' }
 $MaxLogSizeMB          = 5
@@ -463,23 +464,26 @@ function Wait-BackrestOperationObservation {
         [Parameter(Mandatory = $true)][datetime]$Since,
         [Parameter(Mandatory = $true)][string]$Endpoint,
         [hashtable]$Headers = @{},
-        [int]$TimeoutSeconds = 8
+        [int]$TimeoutSeconds = 1800,
+        [int]$PollIntervalSeconds = 5
     )
 
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    do {
-        $latestOperation = Get-LatestBackrestOperation -PlanId $PlanId -Endpoint $Endpoint -Headers $Headers
-        if ($null -ne $latestOperation) {
-            $startTime = ConvertFrom-UnixMilliseconds $latestOperation.unixTimeStartMs
-            if ($null -ne $startTime -and $startTime -ge $Since.AddSeconds(-2)) {
-                return $latestOperation
-            }
-        }
+    return Wait-BackrestOperationFinalStatus `
+        -OperationFetcher {
+            param(
+                [Parameter(Mandatory = $true)][string]$PlanId,
+                [Parameter(Mandatory = $true)][string]$Endpoint,
+                [hashtable]$Headers = @{}
+            )
 
-        Start-Sleep -Milliseconds 750
-    } while ((Get-Date) -lt $deadline)
-
-    return $null
+            Get-LatestBackrestOperation -PlanId $PlanId -Endpoint $Endpoint -Headers $Headers
+        } `
+        -PlanId $PlanId `
+        -Since $Since `
+        -Endpoint $Endpoint `
+        -Headers $Headers `
+        -TimeoutSeconds $TimeoutSeconds `
+        -PollIntervalSeconds $PollIntervalSeconds
 }
 
 if ($TestMode) {
@@ -494,6 +498,10 @@ if (Test-Path -LiteralPath $DetectionModule) {
     }
     catch {
     }
+}
+
+if (Test-Path -LiteralPath $OperationModule) {
+    . $OperationModule
 }
 
 if (Test-Path -LiteralPath $StopSignalFile) {
@@ -818,22 +826,39 @@ try {
 
             if (-not $apiSuccess) { continue }
 
+            $dispatchOutcome = [pscustomobject]@{
+                Operation = $null
+                RawStatus = 'mocked'
+                NormalizedStatus = 'mocked'
+                Outcome = 'success'
+            }
+
             if (-not $global:IsTestMode) {
-                $observedOperation = Wait-BackrestOperationObservation -PlanId $planId -Since $requestStartedAt -Endpoint $BackrestEndpoint -Headers $AuthHeader -TimeoutSeconds 8
-                if ($null -ne $observedOperation) {
-                    $operationId = if ($null -ne $observedOperation.id) { $observedOperation.id } else { 'unknown' }
-                    $flowId = if ($null -ne $observedOperation.flowId) { $observedOperation.flowId } else { 'unknown' }
-                    $operationStatus = if ($null -ne $observedOperation.status) { $observedOperation.status } else { 'unknown' }
-                    Write-Log "Backrest operation observed for batch [$batchId]. OperationId=[$operationId] FlowId=[$flowId] Status=[$operationStatus]" 'SUCCESS' 'Green' $state.Name
+                $dispatchOutcome = Wait-BackrestOperationObservation `
+                    -PlanId $planId `
+                    -Since $requestStartedAt `
+                    -Endpoint $BackrestEndpoint `
+                    -Headers $AuthHeader `
+                    -TimeoutSeconds 1800 `
+                    -PollIntervalSeconds 5
+
+                if ($null -ne $dispatchOutcome) {
+                    $operationId = if ($null -ne $dispatchOutcome.Operation.id) { $dispatchOutcome.Operation.id } else { 'unknown' }
+                    $flowId = if ($null -ne $dispatchOutcome.Operation.flowId) { $dispatchOutcome.Operation.flowId } else { 'unknown' }
+                    $operationStatus = if ($null -ne $dispatchOutcome.RawStatus) { $dispatchOutcome.RawStatus } else { 'unknown' }
+                    Write-Log "Backrest operation reached terminal status for batch [$batchId]. OperationId=[$operationId] FlowId=[$flowId] Status=[$operationStatus] Outcome=[$($dispatchOutcome.Outcome)]" 'SUCCESS' 'Green' $state.Name
                 }
                 else {
-                    Write-Log "Backrest accepted batch [$batchId], but GetOperations did not show a matching operation within 8s." 'WARN' 'Yellow' $state.Name
+                    Write-Log "Backrest accepted batch [$batchId], but no terminal operation status was observed within the wait window." 'WARN' 'Yellow' $state.Name
                 }
+            }
+            else {
+                Write-Log "Backrest terminal wait skipped in test mode for batch [$batchId]." 'TEST' 'Magenta' $state.Name
             }
 
             $state.LastBatchId = $batchId
             $state.LastBatchEventCount = $events
-            $state.LastDispatchStatus = 'success'
+            $state.LastDispatchStatus = if ($null -eq $dispatchOutcome) { 'timeout' } elseif ($dispatchOutcome.Outcome -eq 'failed') { 'failed' } else { 'success' }
             $state.LastRun = $now.ToString('o')
             $state.LastChange = $null
             $state.LastQueuedAt = $null
@@ -846,7 +871,9 @@ try {
                 $state.PendingEventTypes.Remove($key)
             }
 
-            $global:MonitorControl.LastSuccessfulDispatch = $state.LastRun
+            if ($state.LastDispatchStatus -eq 'success') {
+                $global:MonitorControl.LastSuccessfulDispatch = $state.LastRun
+            }
             Mark-StateDirty
             Save-TriggerState
             Save-RuntimeState -Status 'running'
