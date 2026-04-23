@@ -1,11 +1,25 @@
+param (
+    [switch]$TestMode
+)
+
 # ==========================================
 # 1. Configuration & Auth Setup
 # ==========================================
 $BasePath           = $PSScriptRoot
 $EnvFilePath        = Join-Path $BasePath ".env"
 $BackrestConfigPath = "$env:APPDATA\backrest\config.json"
-$BackrestEndpoint   = "http://localhost:9090/v1.Backrest/Backup"
-$IdleTimeSeconds    = 120
+$BackrestEndpoint   = "http://localhost:9898/v1.Backrest/Backup"
+$IdleTimeSeconds    = if ($TestMode) { 10 } else { 120 }
+$global:IsTestMode  = $TestMode
+
+if ($TestMode) {
+    Write-Host "==========================================" -ForegroundColor Magenta
+    Write-Host " TEST MODE ENABLED" -ForegroundColor Magenta
+    Write-Host " - Idle timeout reduced to $IdleTimeSeconds seconds." -ForegroundColor Magenta
+    Write-Host " - API calls will be MOCKED (No backups triggered)." -ForegroundColor Magenta
+    Write-Host "==========================================" -ForegroundColor Magenta
+}
+
 $AuthHeader = @{}
 
 # Load Auth from .env if it exists (Default is no auth)
@@ -64,6 +78,9 @@ foreach ($plan in $plans) {
             $action = {
                 $triggeredPlanId = $Event.MessageData
                 $global:PlanLastChange[$triggeredPlanId] = [DateTime]::Now
+                if ($global:IsTestMode) {
+                    Write-Host "[TEST MODE] File change detected. Timer reset." -ForegroundColor DarkGray
+                }
             }
             
             # Pass the Plan ID natively into the event so it knows exactly which plan to trigger
@@ -107,24 +124,28 @@ try {
                 
                 $JsonPayload = @{ value = $planId } | ConvertTo-Json -Compress
                 
-                # Splatting parameters to handle optional Auth Headers cleanly
-                $RestParams = @{
-                    Uri         = $BackrestEndpoint
-                    Method      = 'Post'
-                    Body        = $JsonPayload
-                    ContentType = 'application/json'
-                    TimeoutSec  = 1
-                }
-                if ($AuthHeader.Count -gt 0) { $RestParams.Headers = $AuthHeader }
-                
-                try {
-                    Invoke-RestMethod @RestParams | Out-Null
-                } 
-                catch {
-                    if ($_.Exception.GetType().Name -eq "WebException" -and $_.Exception.Status -eq "Timeout") {
-                        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Background backup successfully triggered for [$($targetPlan.name)]." -ForegroundColor Green
-                    } else {
-                        Write-Warning "[$(Get-Date -Format 'HH:mm:ss')] API call failed for [$($targetPlan.name)]: $($_.Exception.Message)"
+                if ($global:IsTestMode) {
+                    Write-Host "[$(Get-Date -Format 'HH:mm:ss')] [TEST MODE] API call mocked for [$($targetPlan.name)]. Backup NOT actually triggered." -ForegroundColor Magenta
+                } else {
+                    # Splatting parameters to handle optional Auth Headers cleanly
+                    $RestParams = @{
+                        Uri         = $BackrestEndpoint
+                        Method      = 'Post'
+                        Body        = $JsonPayload
+                        ContentType = 'application/json'
+                        TimeoutSec  = 1
+                    }
+                    if ($AuthHeader.Count -gt 0) { $RestParams.Headers = $AuthHeader }
+                    
+                    try {
+                        Invoke-RestMethod @RestParams | Out-Null
+                    } 
+                    catch {
+                        if ($_.Exception.GetType().Name -eq "WebException" -and $_.Exception.Status -eq "Timeout") {
+                            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Background backup successfully triggered for [$($targetPlan.name)]." -ForegroundColor Green
+                        } else {
+                            Write-Warning "[$(Get-Date -Format 'HH:mm:ss')] API call failed for [$($targetPlan.name)]: $($_.Exception.Message)"
+                        }
                     }
                 }
                 
