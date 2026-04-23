@@ -1,0 +1,7 @@
+﻿[2026-04-23 21:18:21] [PID:24304] [WARN] [Preflight] Another instance is already running. Exiting to prevent overlapping watchers.
+[2026-04-23 21:18:30] [PID:29672] [TEST] [Mock Database Backup] Coalesced events queued for [Test-Plan-A]
+[2026-04-23 21:18:40] [PID:29672] [INFO] [Mock Database Backup] Batch flush: Triggering [Mock Database Backup] covering 2 coalesced event(s). BatchId=[Test-Plan-A-B0001]
+[2026-04-23 21:18:40] [PID:29672] [TEST] [Mock Database Backup] API call MOCKED. Job skipped for batch [Test-Plan-A-B0001].
+[2026-04-23 21:18:45] [PID:29672] [INFO] [Manager] Safe stop signal detected. Shutting down cleanly...
+[2026-04-23 21:18:45] [PID:29672] [INFO] [System] Releasing resources and unbinding watcher pool...
+[2026-04-23 21:18:45] [PID:29672] [INFO] [System] Shutdown complete.

@@ -40,6 +40,35 @@ function Invoke-LogRotation {
     }
 }
 
+function Invoke-StartupLogArchive {
+    if (-not (Test-Path $ArchiveDir)) { New-Item -ItemType Directory -Path $ArchiveDir -Force | Out-Null }
+
+    $timestamp = (Get-Date).ToString("yyyy-MM-dd_HHmmss")
+    foreach ($path in @($LogFile, $ErrorLogFile)) {
+        if (-not (Test-Path $path)) { continue }
+
+        try {
+            $baseName = [IO.Path]::GetFileNameWithoutExtension($path)
+            $info = Get-Item $path -ErrorAction Stop
+            if ($info.Length -gt 0) {
+                Move-Item -Path $path -Destination (Join-Path $ArchiveDir "$baseName`_$timestamp.log") -Force
+            } else {
+                Remove-Item -Path $path -Force -ErrorAction SilentlyContinue
+            }
+        } catch {
+            Write-Host "[$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))] [WARN] Failed to archive old logs: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+
+    try {
+        Get-ChildItem -Path $ArchiveDir -Filter "*.log" -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-$ArchiveDays) } |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-Host "[$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))] [WARN] Failed archive retention cleanup: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+
 function Write-Log {
     param(
         [string]$Message, 
@@ -78,9 +107,6 @@ function Write-Log {
     }
 }
 
-# Run Log Rotation on startup
-Invoke-LogRotation
-
 if ($TestMode) {
     Write-Log "TEST MODE ENABLED - API calls MOCKED. Idle timeout reduced." "INFO" "Magenta" "Preflight"
 }
@@ -92,13 +118,18 @@ $EnvFilePath        = Join-Path $BasePath ".env"
 $StateDir           = Join-Path $BasePath ".state"
 $StateFile          = Join-Path $StateDir "trigger-state.json"
 $BackrestConfigPath = "$env:APPDATA\backrest\config.json"
-$BackrestEndpoint   = "http://localhost:9090/v1.Backrest/Backup"
+$BackrestEndpoint   = if ($env:BACKREST_ENDPOINT) { $env:BACKREST_ENDPOINT } else { "http://localhost:9900/v1.Backrest/Backup" }
 $StopSignalFile     = Join-Path $BasePath ".stop-livebackup"
-$IdleTimeSeconds    = if ($TestMode) { 10 } else { 120 }
+$IdleTimeSeconds    = if ($TestMode) { 10 } else { 15 }
+$global:IdleTimeSeconds = $IdleTimeSeconds
 
 # Ensure state directory exists lazily
 if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
 if (Test-Path $StopSignalFile) { Remove-Item $StopSignalFile -ErrorAction SilentlyContinue }
+
+# Archive old logs BEFORE any new logging (every run gets a clean log)
+Invoke-StartupLogArchive
+Invoke-LogRotation
 
 # ==========================================
 # 3. Mutex / Ownership Guard
@@ -139,7 +170,7 @@ try {
         Write-Log "Backrest config not found at $BackrestConfigPath. Is Backrest installed?" "ERROR" "Red" "Preflight"
         exit 1
     }
-
+    
     $config = Get-Content -Raw $BackrestConfigPath | ConvertFrom-Json
     $plansRaw  = $config.plans
 
@@ -185,11 +216,13 @@ try {
         if (-not $paths -or $paths.Count -eq 0) { continue }
         
         $global:PlanState[$planId] = @{
-            Name       = $planName
-            LastChange = $null
-            EventCount = 0
+            Name          = $planName
+            LastChange    = $null
+            EventCount    = 0
+            BatchNumber   = if ($savedState[$planId] -and $savedState[$planId].BatchNumber) { [int]$savedState[$planId].BatchNumber } else { 0 }
+            CurrentBatchId = if ($savedState[$planId] -and $savedState[$planId].CurrentBatchId) { $savedState[$planId].CurrentBatchId } else { $null }
             QueueLogged = $false
-            LastRun    = if ($savedState[$planId]) { $savedState[$planId].LastRun } else { $null }
+            LastRun       = if ($savedState[$planId]) { $savedState[$planId].LastRun } else { $null }
         }
         
         foreach ($folder in $paths) {
@@ -205,8 +238,18 @@ try {
                     if ($fileName -match '(?i)\.(tmp|temp|bak|swp|lock|log)$|^\~') { return }
 
                     $triggeredPlanId = $Event.MessageData
+                    if ($global:PlanState[$triggeredPlanId].EventCount -eq 0) {
+                        $global:PlanState[$triggeredPlanId].BatchNumber++
+                        $global:PlanState[$triggeredPlanId].CurrentBatchId = "{0}-B{1:D4}" -f $triggeredPlanId, $global:PlanState[$triggeredPlanId].BatchNumber
+                    }
+
                     $global:PlanState[$triggeredPlanId].LastChange = [DateTime]::Now
                     $global:PlanState[$triggeredPlanId].EventCount++
+                    $batchId = $global:PlanState[$triggeredPlanId].CurrentBatchId
+
+                    if ($global:PlanState[$triggeredPlanId].EventCount -eq 1) {
+                        Write-Log "Change detected. Waiting $($global:IdleTimeSeconds)s of inactivity before dispatch for batch [$batchId]." "INFO" "DarkGray" $global:PlanState[$triggeredPlanId].Name
+                    }
                     
                     if ($global:IsTestMode) {
                         Write-Log "Coalesced events queued for [$triggeredPlanId]" "TEST" "DarkGray" $global:PlanState[$triggeredPlanId].Name
@@ -261,6 +304,7 @@ try {
             $lastChange = $state.LastChange
             $events     = $state.EventCount
             $planName   = $state.Name
+            $batchId    = if ($state.CurrentBatchId) { $state.CurrentBatchId } else { "${planId}-B0000" }
             
             # Dequeue condition: Events exist AND debounce window satisfied
             if ($global:IsTestMode -and $events -gt 0 -and -not $state.QueueLogged) {
@@ -270,13 +314,12 @@ try {
 
             if ($null -ne $lastChange -and $events -gt 0 -and ($now - $lastChange).TotalSeconds -ge $IdleTimeSeconds) {
                 
-                Write-Log "Batch flush: Triggering [$planName] covering $events coalesced event(s)." "INFO" "Yellow" $planName
+                Write-Log "Batch flush: Triggering [$planName] covering $events coalesced event(s). BatchId=[$batchId]" "INFO" "Yellow" $planName
                 
                 $JsonPayload = @{ value = $planId } | ConvertTo-Json -Compress
                 $apiSuccess = $false
-                
                 if ($global:IsTestMode) {
-                    Write-Log "API call MOCKED. Job skipped." "TEST" "Magenta" $planName
+                    Write-Log "API call MOCKED. Job skipped for batch [$batchId]." "TEST" "Magenta" $planName
                     $apiSuccess = $true
                 } else {
                     $RestParams = @{
@@ -284,19 +327,27 @@ try {
                         Method      = 'Post'
                         Body        = $JsonPayload
                         ContentType = 'application/json'
-                        TimeoutSec  = 1
+                        TimeoutSec  = 2
                     }
                     if ($AuthHeader.Count -gt 0) { $RestParams.Headers = $AuthHeader }
                     
                     try {
                         Invoke-RestMethod @RestParams | Out-Null
+                        Write-Log "Job successfully dispatched to background processor for batch [$batchId]." "SUCCESS" "Green" $planName
+                        $apiSuccess = $true
                     } 
                     catch {
-                        if ($_.Exception.GetType().Name -eq "WebException" -and $_.Exception.Status -eq "Timeout") {
-                            Write-Log "Job successfully dispatched to background processor." "SUCCESS" "Green" $planName
+                        $exceptionType = $_.Exception.GetType().Name
+                        $exceptionMessage = $_.Exception.Message
+                        $isTimeoutAccepted = ($exceptionType -eq "WebException" -and $_.Exception.Status -eq "Timeout") -or
+                                             ($exceptionType -eq "TaskCanceledException") -or
+                                             ($exceptionType -eq "HttpRequestException" -and $exceptionMessage -match "Timeout")
+
+                        if ($isTimeoutAccepted) {
+                            Write-Log "Job successfully dispatched to background processor for batch [$batchId]." "SUCCESS" "Green" $planName
                             $apiSuccess = $true
                         } else {
-                            Write-Log "API dispatch failed: $($_.Exception.Message)" "ERROR" "Red" $planName
+                            Write-Log "API dispatch failed for batch [$batchId]: $exceptionMessage" "ERROR" "Red" $planName
                         }
                     }
                 }
