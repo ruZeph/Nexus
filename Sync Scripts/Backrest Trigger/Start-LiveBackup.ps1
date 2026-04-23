@@ -15,6 +15,10 @@ $ArchiveDays    = 30
 
 $global:IsTestMode = $TestMode
 
+# Always keep logs inside this script folder (including test mode)
+if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
+if (-not (Test-Path $ArchiveDir)) { New-Item -ItemType Directory -Path $ArchiveDir -Force | Out-Null }
+
 function Invoke-LogRotation {
     if ($global:IsTestMode) { return }
     if (-not (Test-Path $LogFile)) { return }
@@ -47,30 +51,29 @@ function Write-Log {
     $pidPad = $PID.ToString().PadRight(5)
     $logLine = "[$ts] [PID:$pidPad] [$Level] [$Component] $Message"
     
-    # Always write to console (Stream 6) for interactive/test tracking
-    Write-Host $logLine -ForegroundColor $Color
+    # For test mode, use stdout for test harness capture; normal mode keeps colored host output
+    if ($global:IsTestMode) {
+        Write-Output $logLine
+    } else {
+        Write-Host $logLine -ForegroundColor $Color
+    }
 
-    if (-not $global:IsTestMode) {
-        # Lazy directory creation
-        if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
-
-        $attempts = 0
-        $success = $false
-        
-        # Safe Append with Retry for concurrency locks
-        while ($attempts -lt 3 -and -not $success) {
-            try {
-                $logLine | Out-File -FilePath $LogFile -Append -Encoding UTF8 -ErrorAction Stop
-                
-                # Dual-write failures to the segregated error log
-                if ($Level -match "^(ERROR|WARN)$") {
-                    $logLine | Out-File -FilePath $ErrorLogFile -Append -Encoding UTF8 -ErrorAction Stop
-                }
-                $success = $true
-            } catch {
-                $attempts++
-                Start-Sleep -Milliseconds 200
+    $attempts = 0
+    $success = $false
+    
+    # Safe Append with Retry for concurrency locks
+    while ($attempts -lt 3 -and -not $success) {
+        try {
+            $logLine | Out-File -FilePath $LogFile -Append -Encoding UTF8 -ErrorAction Stop
+            
+            # Dual-write failures to the segregated error log
+            if ($Level -match "^(ERROR|WARN)$") {
+                $logLine | Out-File -FilePath $ErrorLogFile -Append -Encoding UTF8 -ErrorAction Stop
             }
+            $success = $true
+        } catch {
+            $attempts++
+            Start-Sleep -Milliseconds 200
         }
     }
 }
@@ -105,7 +108,7 @@ $mutexCreated = $false
 $mutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$mutexCreated)
 
 if (-not $mutexCreated) {
-    Write-Log "Another instance is already active. Exiting to prevent overlapping watchers." "WARN" "Yellow" "Preflight"
+    Write-Log "Another instance is already running. Exiting to prevent overlapping watchers." "WARN" "Yellow" "Preflight"
     exit 0
 }
 
@@ -185,6 +188,7 @@ try {
             Name       = $planName
             LastChange = $null
             EventCount = 0
+            QueueLogged = $false
             LastRun    = if ($savedState[$planId]) { $savedState[$planId].LastRun } else { $null }
         }
         
@@ -204,8 +208,8 @@ try {
                     $global:PlanState[$triggeredPlanId].LastChange = [DateTime]::Now
                     $global:PlanState[$triggeredPlanId].EventCount++
                     
-                    if ($global:IsTestMode -and ($global:PlanState[$triggeredPlanId].EventCount % 10 -eq 1)) {
-                        Write-Log "Coalesced events queued." "TEST" "DarkGray" $global:PlanState[$triggeredPlanId].Name
+                    if ($global:IsTestMode) {
+                        Write-Log "Coalesced events queued for [$triggeredPlanId]" "TEST" "DarkGray" $global:PlanState[$triggeredPlanId].Name
                     }
                 }
 
@@ -233,7 +237,7 @@ try {
         }
     }
 
-    Write-Log "Watcher pool initialized. Standing by for events." "INFO" "Green" "System"
+    Write-Log "Waiting for idle bounds..." "INFO" "Green" "System"
 
     # ==========================================
     # 8. Queue Processing & Batch Execution
@@ -243,7 +247,7 @@ try {
     while ($true) {
         # Safe-stop boundary check
         if (Test-Path $StopSignalFile) {
-            Write-Log "Safe stop signal detected ($StopSignalFile). Initiating graceful shutdown." "INFO" "Magenta" "Manager"
+            Write-Log "Safe stop signal detected. Shutting down cleanly..." "INFO" "Magenta" "Manager"
             Remove-Item $StopSignalFile -Force -ErrorAction SilentlyContinue
             break
         }
@@ -259,9 +263,14 @@ try {
             $planName   = $state.Name
             
             # Dequeue condition: Events exist AND debounce window satisfied
+            if ($global:IsTestMode -and $events -gt 0 -and -not $state.QueueLogged) {
+                Write-Log "Coalesced events queued for [$planId]" "TEST" "DarkGray" $planName
+                $global:PlanState[$planId].QueueLogged = $true
+            }
+
             if ($null -ne $lastChange -and $events -gt 0 -and ($now - $lastChange).TotalSeconds -ge $IdleTimeSeconds) {
                 
-                Write-Log "Batch flush triggered. Dispatching API request covering $events coalesced event(s)." "INFO" "Yellow" $planName
+                Write-Log "Batch flush: Triggering [$planName] covering $events coalesced event(s)." "INFO" "Yellow" $planName
                 
                 $JsonPayload = @{ value = $planId } | ConvertTo-Json -Compress
                 $apiSuccess = $false
@@ -296,6 +305,7 @@ try {
                 if ($apiSuccess) {
                     $global:PlanState[$planId].LastChange = $null
                     $global:PlanState[$planId].EventCount = 0
+                    $global:PlanState[$planId].QueueLogged = $false
                     $global:PlanState[$planId].LastRun    = $now.ToString("o")
                     $stateChanged = $true
                 }
