@@ -1,4 +1,4 @@
-# RClone Sync
+# Rclone Backup Job Runner
 
 A PowerShell-based rclone backup runner with two execution modes: **scheduled/manual run** and **real-time monitor mode** triggered by folder changes.
 
@@ -16,7 +16,7 @@ A PowerShell-based rclone backup runner with two execution modes: **scheduled/ma
 
 ## Table of Contents
 
-- [RClone Sync](#rclone-sync)
+- [Rclone Backup Job Runner](#rclone-backup-job-runner)
   - [Features](#features)
   - [Table of Contents](#table-of-contents)
   - [Quick Start](#quick-start)
@@ -57,7 +57,7 @@ A PowerShell-based rclone backup runner with two execution modes: **scheduled/ma
 ### Option A: One-Command Setup
 
 ```powershell
-irm https://raw.githubusercontent.com/ruZeph/Nexus/main/RClone%20Sync/quick-start.ps1 | iex
+irm https://raw.githubusercontent.com/ruZeph/Nexus/main/Sync%20Scripts/RClone%20Sync/quick-start.ps1 | iex
 ```
 
 The setup script will validate PowerShell version and rclone installation, download all runner files with retries, generate a blank `backup-jobs.json` (won't overwrite existing), verify your rclone remote, and launch the interactive job configuration helper.
@@ -373,7 +373,7 @@ schtasks /create `
   /rl HIGHEST `
   /it `
   /f `
-  /tr 'powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File "<INSTALLATION PATH>\RClone Sync\Launch-Runner.ps1" -Mode monitor -TaskScheduler -Silent -IdleTimeSeconds 60'
+  /tr 'powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File "<INSTALLATION PATH>\Nexus\Sync Scripts\Launch-Runner.ps1" -Mode monitor -TaskScheduler -Silent -IdleTimeSeconds 60'
 ```
 
 IMP: Replace `<INSTALLATION PATH>` with Script installtion root.
