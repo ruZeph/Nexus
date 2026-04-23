@@ -23,7 +23,7 @@ $BackrestConfigPath    = Join-Path $env:APPDATA 'backrest\config.json'
 $BackrestEndpoint      = if ($env:BACKREST_ENDPOINT) { $env:BACKREST_ENDPOINT } else { 'http://localhost:9900/v1.Backrest/Backup' }
 $MaxLogSizeMB          = 5
 $ArchiveDays           = 30
-$IdleTimeSeconds       = if ($TestMode) { 10 } else { 15 }
+$IdleTimeSeconds       = if ($TestMode) { 10 } else { 30000 }
 $LoopSleepMilliseconds = if ($TestMode) { 1000 } else { 2000 }
 $ResourceLogInterval   = 60
 $StateFlushInterval    = 2
@@ -313,7 +313,7 @@ function Save-RuntimeState {
     }
 }
 
-function Mark-StateDirty {
+function Set-StateDirty {
     $global:MonitorControl.StateDirty = $true
     $global:MonitorControl.RuntimeDirty = $true
 }
@@ -368,7 +368,7 @@ function Test-ShouldIgnorePath {
     return $false
 }
 
-function Load-SavedPlanState {
+function Get-SavedPlanState {
     if (-not (Test-Path -LiteralPath $StateFile)) { return @{} }
 
     try {
@@ -597,7 +597,7 @@ try {
         }
     }
 
-    $savedState = Load-SavedPlanState
+    $savedState = Get-SavedPlanState
 
     foreach ($plan in $plans) {
         if (-not $plan.paths -or @($plan.paths).Count -eq 0) {
@@ -630,14 +630,14 @@ try {
 
             $action = {
                 try {
-                    $eventArgs = $Event.SourceEventArgs
+                    $pfEventArgs = $Event.SourceEventArgs
                     $planId = [string]$Event.MessageData.PlanId
                     $planState = $global:PlanState[$planId]
                     if ($null -eq $planState) { return }
 
-                    $fullPath = $eventArgs.FullPath
+                    $fullPath = $pfEventArgs.FullPath
                     if ([string]::IsNullOrWhiteSpace([string]$fullPath)) {
-                        $fullPath = $eventArgs.Name
+                        $fullPath = $pfEventArgs.Name
                     }
 
                     $name = [IO.Path]::GetFileName([string]$fullPath)
@@ -659,7 +659,7 @@ try {
                         $planState.QueueLogged = $false
                     }
 
-                    $eventType = [string]$eventArgs.ChangeType
+                    $eventType = [string]$pfEventArgs.ChangeType
                     if ([string]::IsNullOrWhiteSpace($eventType)) { $eventType = 'Changed' }
 
                     $pendingPaths = @($planState.PendingPaths)
@@ -746,7 +746,7 @@ try {
             Write-Log "Safe stop signal detected. Shutting down cleanly... Reason=[$stopReason]" 'INFO' 'Magenta' 'Manager'
             $global:MonitorControl.ShutdownRequested = $true
             Remove-Item -LiteralPath $StopSignalFile -Force -ErrorAction SilentlyContinue
-            Mark-StateDirty
+            Set-StateDirty
             Save-TriggerState
             Save-RuntimeState -Status 'stopping' -Force
             break
@@ -771,7 +771,7 @@ try {
                 $pathSummary = if (@($state.PendingPaths).Count -gt 0) { @($state.PendingPaths) -join '; ' } else { 'path sample unavailable' }
                 Write-Log "Coalesced events queued for [$planId]. BatchId=[$batchId] Count=$events Types=[$eventTypeSummary] Paths=[$pathSummary]" 'INFO' 'DarkGray' $state.Name
                 $state.QueueLogged = $true
-                Mark-StateDirty
+                Set-StateDirty
             }
 
             if ($null -eq $lastChange -or $events -le 0) { continue }
@@ -792,7 +792,7 @@ try {
                     Method      = 'Post'
                     Body        = $payload
                     ContentType = 'application/json'
-                    TimeoutSec  = 2
+                    TimeoutSec  = 600000
                 }
 
                 if ($AuthHeader.Count -gt 0) {
@@ -819,7 +819,7 @@ try {
                     else {
                         $state.LastDispatchStatus = 'failed'
                         Write-Log "API dispatch failed for batch [$batchId]: $exceptionMessage" 'ERROR' 'Red' $state.Name
-                        Mark-StateDirty
+                        Set-StateDirty
                     }
                 }
             }
@@ -874,7 +874,7 @@ try {
             if ($state.LastDispatchStatus -eq 'success') {
                 $global:MonitorControl.LastSuccessfulDispatch = $state.LastRun
             }
-            Mark-StateDirty
+            Set-StateDirty
             Save-TriggerState
             Save-RuntimeState -Status 'running'
         }
@@ -892,7 +892,7 @@ finally {
     Write-Log 'Releasing resources and unbinding watcher pool...' 'INFO' 'DarkGray' 'System'
 
     try {
-        Mark-StateDirty
+        Set-StateDirty
         Save-TriggerState
     }
     catch {
