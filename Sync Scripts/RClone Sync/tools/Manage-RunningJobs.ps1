@@ -70,8 +70,11 @@ function Get-RcloneJobProcesses {
         $allProcesses |
         Where-Object {
             $_.Name -in @('powershell.exe', 'pwsh.exe') -and
-            $_.CommandLine -match 'Run-RcloneJobs\.ps1' -and
-            $_.CommandLine -match '-JobName|-SourceFolder|-Monitor'
+            (
+                $_.CommandLine -match 'Run-RcloneJobs\.ps1' -or
+                $_.CommandLine -match 'Start-RcloneMonitor\.ps1'
+            ) -and
+            $_.CommandLine -match '-JobName|-SourceFolder|-Monitor|TaskScheduler'
         }
     )
 
@@ -478,6 +481,21 @@ try {
 
         if ($null -ne $resolvedMonitorPid) {
             $resolvedMonitorDetails = Get-LiveMonitorProcessDetails -ProcessId $resolvedMonitorPid
+        }
+
+        if ($null -ne $resolvedMonitorDetails) {
+            $resolvedPid = [int]$resolvedMonitorDetails.ProcessId
+            $hasResolvedEntry = @($entries | Where-Object { [int]$_.ProcessId -eq $resolvedPid }).Count -gt 0
+            if (-not $hasResolvedEntry) {
+                $entries += [pscustomobject]@{
+                    Kind = 'monitor'
+                    ProcessId = [int]$resolvedMonitorDetails.ProcessId
+                    ParentProcessId = [int]$resolvedMonitorDetails.ParentProcessId
+                    Name = [string]$resolvedMonitorDetails.Name
+                    CommandLine = [string]$resolvedMonitorDetails.CommandLine
+                    StartTime = $resolvedMonitorDetails.StartTime
+                }
+            }
         }
 
         if ($taskStatus.Found) {

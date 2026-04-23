@@ -2,8 +2,7 @@ param(
     [ValidateSet('run', 'dryrun', 'monitor')]
     [string]$Mode = 'monitor',
     [int]$IdleTimeSeconds = 60,
-    [switch]$Silent,
-    [switch]$TaskScheduler
+    [switch]$Silent
 )
 
 Set-StrictMode -Version Latest
@@ -28,4 +27,4 @@ if (-not (Test-Path -LiteralPath $configPath)) {
     throw "Config file not found: $configPath"
 }
 
-& $launcher -ConfigPath $configPath -Mode $Mode -TaskScheduler:$TaskScheduler -Silent:$Silent -IdleTimeSeconds $IdleTimeSeconds
+& $launcher -ConfigPath $configPath -Mode $Mode -TaskScheduler -Silent:$Silent -IdleTimeSeconds $IdleTimeSeconds
