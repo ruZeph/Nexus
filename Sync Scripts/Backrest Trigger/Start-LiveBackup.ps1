@@ -518,28 +518,14 @@ function Get-PersistedPlanStateSnapshot {
     }
 }
 
-function Invoke-SafeStateSave {
-    param(
-        [Parameter(Mandatory = $true)][scriptblock]$Action,
-        [Parameter(Mandatory = $true)][string]$FailureMessage,
-        [switch]$OnlyWarnWhenForced,
-        [switch]$Force
-    )
-    try {
-        & $Action
-    }
-    catch {
-        if (-not $OnlyWarnWhenForced -or $Force) {
-            Write-Log "$FailureMessage $($_.Exception.Message)" 'WARN' 'Yellow' 'State'
-        }
-    }
-}
-
 function Save-TriggerState {
-    Invoke-SafeStateSave -FailureMessage 'Failed to flush state to disk:' -Action {
+    try {
         Write-JsonFile -Path $StateFile -Data (Get-PersistedPlanStateSnapshot) -Depth 8
         $global:MonitorControl.StateDirty = $false
         $global:MonitorControl.LastStateFlush = Get-Date
+    }
+    catch {
+        Write-Log "Failed to flush state to disk: $($_.Exception.Message)" 'WARN' 'Yellow' 'State'
     }
 }
 
@@ -549,12 +535,11 @@ function Save-RuntimeState {
         [switch]$Force
     )
 
-    $capturedStatus = $Status
-    Invoke-SafeStateSave -FailureMessage 'Failed to write runtime heartbeat:' -OnlyWarnWhenForced -Force:$Force -Action {
+    try {
         $payload = @{
             InstanceId             = $global:MonitorControl.InstanceId
             ProcessId              = $PID
-            Status                 = $capturedStatus
+            Status                 = $Status
             StartedAt              = $global:MonitorStartedAt.ToString('o')
             UpdatedAt              = (Get-Date).ToString('o')
             TestMode               = $global:IsTestMode
@@ -571,7 +556,12 @@ function Save-RuntimeState {
         Write-JsonFile -Path $RuntimeStateFile -Data $payload -Depth 6
         $global:MonitorControl.RuntimeDirty = $false
         $global:MonitorControl.LastRuntimeFlush = Get-Date
-    }.GetNewClosure()
+    }
+    catch {
+        if ($Force) {
+            Write-Log "Failed to write runtime heartbeat: $($_.Exception.Message)" 'WARN' 'Yellow' 'State'
+        }
+    }
 }
 
 function Set-StateDirty {
@@ -658,7 +648,7 @@ function Test-ShouldIgnorePath {
 # ---------------------------------------------------------------------------
 
 function Save-PlanDispatchState {
-    Invoke-SafeStateSave -FailureMessage 'Failed to save plan dispatch state:' -Action {
+    try {
         $records = [ordered]@{}
         foreach ($planId in @($global:PlanState.Keys | Sort-Object)) {
             $s = $global:PlanState[$planId]
@@ -681,6 +671,9 @@ function Save-PlanDispatchState {
         }
 
         Write-JsonFile -Path $PlanStateFile -Data $payload -Depth 8
+    }
+    catch {
+        Write-Log "Failed to save plan dispatch state: $($_.Exception.Message)" 'WARN' 'Yellow' 'State'
     }
 }
 
