@@ -632,6 +632,8 @@ function New-PlanRuntimeState {
         BatchNumber         = [int](Get-SafeProperty -Object $savedPlan -Name 'BatchNumber' -Default 0)
         CurrentBatchId      = Get-SafeProperty -Object $savedPlan -Name 'CurrentBatchId'
         QueueLogged         = $false
+        LastLoggedEventCount = 0
+        LastLoggedChangeTime = $null
         LastRun             = Get-SafeProperty -Object $savedPlan -Name 'LastRun'
         LastQueuedAt        = ConvertFrom-DateValue (Get-SafeProperty -Object $savedPlan -Name 'LastQueuedAt')
         LastBatchId         = Get-SafeProperty -Object $savedPlan -Name 'LastBatchId'
@@ -689,7 +691,6 @@ function Get-PlanSnapshotSignature {
                 continue 
             }
 
-            # Use [long] to prevent integer overflow with massive timestamps sums
             $timestampSum = [long]($items | Measure-Object -Property LastWriteTicks -Sum).Sum
             $quickSig = "$($items.Count)|$($items[0].Name)|$($items[-1].Name)|$timestampSum"
             
@@ -1365,12 +1366,27 @@ try {
             $lastChange = ConvertFrom-DateValue $state.LastChange
             $batchId = if ([string]::IsNullOrWhiteSpace([string]$state.CurrentBatchId)) { "${planId}-B0000" } else { $state.CurrentBatchId }
 
-            if ($events -gt 0 -and -not [bool]$state.QueueLogged) {
-                $eventTypeSummary = @($state.PendingEventTypes.Keys | Sort-Object | ForEach-Object { "$_=$($state.PendingEventTypes[$_])" }) -join ', '
-                $pathSummary = if (@($state.PendingPaths).Count -gt 0) { @($state.PendingPaths) -join '; ' } else { 'path sample unavailable' }
-                Write-Log "Coalesced events queued for [$planId]. BatchId=[$batchId] Count=$events Types=[$eventTypeSummary] Paths=[$pathSummary]" 'INFO' 'DarkGray' $state.Name
-                $state.QueueLogged = $true
-                Set-StateDirty
+            if ($events -gt 0) {
+                if (-not [bool]$state.QueueLogged) {
+                    $eventTypeSummary = @($state.PendingEventTypes.Keys | Sort-Object | ForEach-Object { "$_=$($state.PendingEventTypes[$_])" }) -join ', '
+                    $pathSummary = if (@($state.PendingPaths).Count -gt 0) { @($state.PendingPaths) -join '; ' } else { 'path sample unavailable' }
+                    Write-Log "Coalesced events queued for [$planId]. BatchId=[$batchId] Count=$events Types=[$eventTypeSummary] Paths=[$pathSummary]" 'INFO' 'DarkGray' $state.Name
+                    
+                    $state.QueueLogged = $true
+                    $state.LastLoggedEventCount = $events
+                    $state.LastLoggedChangeTime = $lastChange
+                    Set-StateDirty
+                }
+                elseif ($events -gt [int]$state.LastLoggedEventCount) {
+                    # Provide visual feedback to the user that new changes are pushing the timer back
+                    $prevLogTime = ConvertFrom-DateValue $state.LastLoggedChangeTime
+                    if ($null -eq $prevLogTime -or ($lastChange - $prevLogTime).TotalSeconds -ge 30) {
+                        Write-Log "Additional events registered for [$planId]. Debounce timer successfully extended. Total events in batch: $events" 'INFO' 'DarkGray' $state.Name
+                        $state.LastLoggedEventCount = $events
+                        $state.LastLoggedChangeTime = $lastChange
+                        Set-StateDirty
+                    }
+                }
             }
 
             if ($null -eq $lastChange -or $events -le 0) { continue }
@@ -1434,6 +1450,8 @@ try {
             $state.EventCount = 0
             $state.CurrentBatchId = $null
             $state.QueueLogged = $false
+            $state.LastLoggedEventCount = 0     
+            $state.LastLoggedChangeTime = $null 
             $state.PendingPaths = @()
 
             foreach ($key in @($state.PendingEventTypes.Keys)) {
