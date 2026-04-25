@@ -1204,7 +1204,10 @@ try {
     # --- Restart-resilience: check for plans that need re-triggering on startup ---
     $savedDispatch = Get-SavedPlanDispatchState
     $savedDispatch = Repair-PlanDispatchSnapshot -SavedDispatch $savedDispatch
-    $retriggerIds  = Find-PlansNeedingRetrigger -SavedDispatch $savedDispatch
+    
+    # Wrap the function call in @() to guarantee an array is returned
+    $retriggerIds  = @(Find-PlansNeedingRetrigger -SavedDispatch $savedDispatch)
+    
     foreach ($rid in $retriggerIds) {
         Invoke-SyntheticRetrigger -PlanId $rid
     }
