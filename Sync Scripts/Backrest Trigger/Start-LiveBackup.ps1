@@ -686,6 +686,9 @@ function Get-SavedPlanDispatchState {
     if ($null -eq $payload) { return @{} }
 
     if ($payload.ContainsKey('Plans')) {
+        $planCount = @($payload.Plans.Keys).Count
+        $updatedAt = if ($null -ne $payload.Metadata -and $null -ne $payload.Metadata.UpdatedAt) { $payload.Metadata.UpdatedAt } else { 'unknown' }
+        Write-Log "Loaded plan dispatch snapshot from disk. Recovered $planCount record(s) saved at $updatedAt." 'INFO' 'DarkGray' 'State'
         return $payload.Plans
     }
 
@@ -846,7 +849,9 @@ function Get-SavedPlanState {
     }
 
     if ($savedPayload.ContainsKey('Plans')) {
-        Write-Log 'Loaded previous trigger state from disk.' 'INFO' 'DarkGray' 'State'
+        $planCount = @($savedPayload.Plans.Keys).Count
+        $updatedAt = if ($null -ne $savedPayload.Metadata -and $null -ne $savedPayload.Metadata.UpdatedAt) { $savedPayload.Metadata.UpdatedAt } else { 'unknown' }
+        Write-Log "Loaded previous trigger state from disk. Recovered $planCount plan(s) saved at $updatedAt." 'INFO' 'DarkGray' 'State'
         return $savedPayload.Plans
     }
 
