@@ -31,7 +31,7 @@ $StateFlushInterval    = 2
 $RuntimeFlushInterval  = 5
 
 # Shared timestamp format used across all log and state writers in this script.
-$script:TsFmt = 'yyyy-MM-dd HH:mm:ss'
+$global:TsFmt = 'yyyy-MM-dd HH:mm:ss'
 
 $global:IsTestMode = [bool]$TestMode
 $global:IdleTimeSeconds = $IdleTimeSeconds
@@ -70,7 +70,7 @@ function Invoke-LogRotation {
             Remove-Item -Force -ErrorAction SilentlyContinue
     }
     catch {
-        Write-Host "[$((Get-Date).ToString($script:TsFmt))] [WARN] Failed to rotate log file: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "[$((Get-Date).ToString($global:TsFmt))] [WARN] Failed to rotate log file: $($_.Exception.Message)" -ForegroundColor Yellow
     }
 }
 
@@ -91,7 +91,7 @@ function Invoke-StartupLogArchive {
             }
         }
         catch {
-            Write-Host "[$((Get-Date).ToString($script:TsFmt))] [WARN] Failed to archive old logs: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "[$((Get-Date).ToString($global:TsFmt))] [WARN] Failed to archive old logs: $($_.Exception.Message)" -ForegroundColor Yellow
         }
     }
 
@@ -101,7 +101,7 @@ function Invoke-StartupLogArchive {
             Remove-Item -Force -ErrorAction SilentlyContinue
     }
     catch {
-        Write-Host "[$((Get-Date).ToString($script:TsFmt))] [WARN] Failed archive retention cleanup: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "[$((Get-Date).ToString($global:TsFmt))] [WARN] Failed archive retention cleanup: $($_.Exception.Message)" -ForegroundColor Yellow
     }
 }
 
@@ -109,7 +109,7 @@ function Write-SessionSeparator {
     $separator = '............................................................'
     foreach ($path in @($LogFile, $ErrorLogFile)) {
         try {
-            [System.IO.File]::AppendAllText($path, "[$((Get-Date).ToString($script:TsFmt))] $separator`n")
+            [System.IO.File]::AppendAllText($path, "[$((Get-Date).ToString($global:TsFmt))] $separator`n")
         }
         catch {
         }
@@ -124,7 +124,7 @@ function Write-Log {
         [string]$Component = 'System'
     )
 
-    $ts = (Get-Date).ToString($script:TsFmt)
+    $ts = (Get-Date).ToString($global:TsFmt)
     $pidPad = $PID.ToString().PadRight(5)
     $logLine = "[$ts] [PID:$pidPad] [$Level] [$Component] $Message"
 
@@ -259,6 +259,36 @@ function Resolve-StatusString {
     return $null
 }
 
+function Get-SafeProperty {
+    param(
+        [AllowNull()]$Object,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [AllowNull()]$Default = $null
+    )
+
+    if ($null -eq $Object) {
+        return $Default
+    }
+
+    if ($Object -is [System.Collections.IDictionary]) {
+        if ($Object.Contains($Name)) {
+            return $Object[$Name]
+        }
+        return $Default
+    }
+
+    try {
+        $prop = $Object.PSObject.Properties[$Name]
+        if ($null -ne $prop) {
+            return $prop.Value
+        }
+    }
+    catch {
+    }
+
+    return $Default
+}
+
 function ConvertTo-PrettyJsonString {
     param(
         [Parameter(Mandatory = $true)][string]$Json,
@@ -389,10 +419,6 @@ function ConvertTo-HashtableDeep {
         return $ht
     }
 
-    # Scalars (string, bool, numeric, datetime, enum) must be returned as-is.
-    # Strings satisfy IEnumerable AND have PSObject.Properties (Length, Chars, …) — both
-    # branches must be guarded or a string like "success" gets turned into a hashtable,
-    # zeroing LastDispatchStatus and causing spurious restart re-triggers.
     if ($InputObject -is [string] -or
         $InputObject -is [bool]   -or
         $InputObject -is [int]    -or $InputObject -is [long]   -or
@@ -502,6 +528,7 @@ function Get-PersistedPlanStateSnapshot {
             LastBatchId         = $state.LastBatchId
             LastBatchEventCount = [int]$state.LastBatchEventCount
             LastDispatchStatus  = $state.LastDispatchStatus
+            Snapshot            = $state.Snapshot
             PendingPaths        = @($state.PendingPaths)
             PendingEventTypes   = Get-PendingEventTypeSnapshot -EventTypes $state.PendingEventTypes
         }
@@ -581,22 +608,18 @@ function New-PlanRuntimeState {
     }
 
     $pendingTypes = [hashtable]::Synchronized(@{})
-    if ($null -ne $savedPlan -and $null -ne $savedPlan.PendingEventTypes) {
-        $pendingSource = $savedPlan.PendingEventTypes
-
-        if ($pendingSource -is [System.Collections.IDictionary]) {
-            foreach ($key in @($pendingSource.Keys)) {
-                $pendingTypes[[string]$key] = [int]$pendingSource[$key]
+    $savedPendingTypes = Get-SafeProperty -Object $savedPlan -Name 'PendingEventTypes'
+    
+    if ($null -ne $savedPendingTypes) {
+        if ($savedPendingTypes -is [System.Collections.IDictionary]) {
+            foreach ($key in @($savedPendingTypes.Keys)) {
+                $pendingTypes[[string]$key] = [int]$savedPendingTypes[$key]
             }
         }
         else {
-            foreach ($prop in @($pendingSource.PSObject.Properties)) {
-                if ($null -eq $prop -or [string]::IsNullOrWhiteSpace([string]$prop.Name)) {
-                    continue
-                }
-                if ($prop.MemberType -notin @('NoteProperty', 'Property', 'AliasProperty', 'ScriptProperty')) {
-                    continue
-                }
+            foreach ($prop in @($savedPendingTypes.PSObject.Properties)) {
+                if ($null -eq $prop -or [string]::IsNullOrWhiteSpace([string]$prop.Name)) { continue }
+                if ($prop.MemberType -notin @('NoteProperty', 'Property', 'AliasProperty', 'ScriptProperty')) { continue }
                 $pendingTypes[[string]$prop.Name] = [int]$prop.Value
             }
         }
@@ -604,22 +627,24 @@ function New-PlanRuntimeState {
 
     return [hashtable]::Synchronized(@{
         Name                = $Plan.name
-        LastChange          = if ($null -ne $savedPlan) { ConvertFrom-DateValue $savedPlan.LastChange } else { $null }
-        EventCount          = if ($null -ne $savedPlan -and $null -ne $savedPlan.EventCount) { [int]$savedPlan.EventCount } else { 0 }
-        BatchNumber         = if ($null -ne $savedPlan -and $null -ne $savedPlan.BatchNumber) { [int]$savedPlan.BatchNumber } else { 0 }
-        CurrentBatchId      = if ($null -ne $savedPlan) { $savedPlan.CurrentBatchId } else { $null }
+        LastChange          = ConvertFrom-DateValue (Get-SafeProperty -Object $savedPlan -Name 'LastChange')
+        EventCount          = [int](Get-SafeProperty -Object $savedPlan -Name 'EventCount' -Default 0)
+        BatchNumber         = [int](Get-SafeProperty -Object $savedPlan -Name 'BatchNumber' -Default 0)
+        CurrentBatchId      = Get-SafeProperty -Object $savedPlan -Name 'CurrentBatchId'
         QueueLogged         = $false
-        LastRun             = if ($null -ne $savedPlan) { $savedPlan.LastRun } else { $null }
-        LastQueuedAt        = if ($null -ne $savedPlan) { ConvertFrom-DateValue $savedPlan.LastQueuedAt } else { $null }
-        LastBatchId         = if ($null -ne $savedPlan) { $savedPlan.LastBatchId } else { $null }
-        LastBatchEventCount = if ($null -ne $savedPlan -and $null -ne $savedPlan.LastBatchEventCount) { [int]$savedPlan.LastBatchEventCount } else { 0 }
-        LastDispatchStatus  = if ($null -ne $savedPlan) { Resolve-StatusString -Value $savedPlan.LastDispatchStatus } else { $null }
-        PendingPaths        = if ($null -ne $savedPlan -and $savedPlan.PendingPaths) { @($savedPlan.PendingPaths) } else { @() }
+        LastRun             = Get-SafeProperty -Object $savedPlan -Name 'LastRun'
+        LastQueuedAt        = ConvertFrom-DateValue (Get-SafeProperty -Object $savedPlan -Name 'LastQueuedAt')
+        LastBatchId         = Get-SafeProperty -Object $savedPlan -Name 'LastBatchId'
+        LastBatchEventCount = [int](Get-SafeProperty -Object $savedPlan -Name 'LastBatchEventCount' -Default 0)
+        LastDispatchStatus  = Resolve-StatusString -Value (Get-SafeProperty -Object $savedPlan -Name 'LastDispatchStatus')
+        Snapshot            = Get-SafeProperty -Object $savedPlan -Name 'Snapshot' -Default ''
+        PendingPaths        = @(Get-SafeProperty -Object $savedPlan -Name 'PendingPaths' -Default @())
         PendingEventTypes   = $pendingTypes
     })
 }
 
-function Test-ShouldIgnorePath {
+# IMPORTANT: Defined in global scope so event watchers can access it.
+function global:Test-ShouldIgnorePath {
     param([string]$Path)
 
     if ([string]::IsNullOrWhiteSpace($Path)) { return $true }
@@ -642,10 +667,53 @@ function Test-ShouldIgnorePath {
 # against current conditions and re-trigger any plan that:
 #   (a) had a non-success LastDispatchStatus (failed / dispatched-but-unknown), or
 #   (b) is brand-new (no record at all).
-#
-# This ensures a plan that changed while the daemon was stopped (or whose
-# trigger failed mid-session) is never silently dropped.
+#   (c) folder signature changed while offline
 # ---------------------------------------------------------------------------
+
+function Get-PlanSnapshotSignature {
+    param([string[]]$Paths)
+
+    if ($null -eq $Paths -or $Paths.Count -eq 0) { return 'EMPTY' }
+    
+    $signatures = @()
+    foreach ($path in $Paths) {
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+
+        try {
+            $items = @(Get-ChildItem -LiteralPath $path -Force -ErrorAction Stop | 
+                Select-Object -Property Name, @{ Name = 'LastWriteTicks'; Expression = { $_.LastWriteTimeUtc.Ticks } } | 
+                Sort-Object -Property Name)
+
+            if ($items.Count -eq 0) { 
+                $signatures += 'EMPTY'
+                continue 
+            }
+
+            # Use [long] to prevent integer overflow with massive timestamps sums
+            $timestampSum = [long]($items | Measure-Object -Property LastWriteTicks -Sum).Sum
+            $quickSig = "$($items.Count)|$($items[0].Name)|$($items[-1].Name)|$timestampSum"
+            
+            if ($items.Count -gt 500) {
+                $signatures += $quickSig
+            } else {
+                $signatureData = ($items | ForEach-Object { "$($_.Name)|$($_.LastWriteTicks)" }) -join '|'
+                $hash = [System.Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($signatureData))
+                $signatures += ([System.BitConverter]::ToString($hash) -replace '-', '')
+            }
+        }
+        catch [System.UnauthorizedAccessException] {
+            $signatures += 'ERROR_ACCESS'
+        }
+        catch {
+            $signatures += 'ERROR_READ'
+        }
+    }
+
+    if ($signatures.Count -eq 0) { return 'ERROR_ALL' }
+    $finalData = $signatures -join '||'
+    $finalHash = [System.Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($finalData))
+    return ([System.BitConverter]::ToString($finalHash) -replace '-', '')
+}
 
 function Save-PlanDispatchState {
     try {
@@ -657,6 +725,7 @@ function Save-PlanDispatchState {
                 LastRun            = $s.LastRun
                 LastBatchId        = $s.LastBatchId
                 LastDispatchStatus = $s.LastDispatchStatus
+                Snapshot           = $s.Snapshot
                 SavedAt            = (Get-Date).ToString('o')
             }
         }
@@ -685,27 +754,26 @@ function Get-SavedPlanDispatchState {
     $payload = Read-JsonHashtableWithBackup -Path $PlanStateFile -Component 'State'
     if ($null -eq $payload) { return @{} }
 
-    if ($payload.ContainsKey('Plans')) {
-        $planCount = @($payload.Plans.Keys).Count
-        $updatedAt = if ($null -ne $payload.Metadata -and $null -ne $payload.Metadata.UpdatedAt) { $payload.Metadata.UpdatedAt } else { 'unknown' }
+    $plansObj = Get-SafeProperty -Object $payload -Name 'Plans'
+    if ($null -ne $plansObj) {
+        $planCount = 0
+        if ($plansObj -is [System.Collections.IDictionary] -or $plansObj -is [array]) { 
+            $planCount = $plansObj.Count 
+        } else {
+            try { $planCount = @($plansObj.PSObject.Properties).Count } catch {}
+        }
+
+        $metaObj = Get-SafeProperty -Object $payload -Name 'Metadata'
+        $updatedAt = Get-SafeProperty -Object $metaObj -Name 'UpdatedAt' -Default 'unknown'
+
         Write-Log "Loaded plan dispatch snapshot from disk. Recovered $planCount record(s) saved at $updatedAt." 'INFO' 'DarkGray' 'State'
-        return $payload.Plans
+        return $plansObj
     }
 
     return @{}
 }
 
 function Repair-PlanDispatchSnapshot {
-    <#
-    .SYNOPSIS
-    RClone-style snapshot repair for restart detection.
-
-    .DESCRIPTION
-    If plan-dispatch-state is missing, incomplete, or stale for currently loaded
-    plans, hydrate missing records from in-memory plan runtime state (which is
-    already restored from trigger-state on startup). This prevents false
-    startup re-triggers caused by a missing/partial dispatch snapshot.
-    #>
     param([hashtable]$SavedDispatch = @{})
 
     $repaired = @{}
@@ -725,6 +793,7 @@ function Repair-PlanDispatchSnapshot {
             LastRun            = $state.LastRun
             LastBatchId        = $state.LastBatchId
             LastDispatchStatus = $state.LastDispatchStatus
+            Snapshot           = $state.Snapshot
             SavedAt            = (Get-Date).ToString('o')
         }
 
@@ -753,77 +822,80 @@ function Repair-PlanDispatchSnapshot {
 }
 
 function Find-PlansNeedingRetrigger {
-    <#
-    .SYNOPSIS
-    On startup, identify plans that should be immediately queued for re-trigger.
-
-    A plan needs a re-trigger when any of the following is true:
-      1. No dispatch record exists for it (first run, or record was cleared).
-      2. LastDispatchStatus is not 'success' (failed, dispatched-but-unknown, etc.).
-
-    Returns a list of plan IDs that should have a synthetic event injected so
-    the idle debounce fires on the next loop iteration.
-    #>
-    param([hashtable]$SavedDispatch)
+    param(
+        [hashtable]$SavedDispatch,
+        [array]$ConfigPlans
+    )
 
     $needsRetrigger = @()
     foreach ($planId in @($global:PlanState.Keys)) {
         $state = $global:PlanState[$planId]
         $runtimeLastStatus = Resolve-StatusString -Value $state.LastDispatchStatus
         $runtimeHasRun = -not [string]::IsNullOrWhiteSpace([string]$state.LastRun)
+        
+        $planConfig = $ConfigPlans | Where-Object { $_.id -eq $planId } | Select-Object -First 1
+        $currentSnapshot = if ($null -ne $planConfig) { Get-PlanSnapshotSignature -Paths @($planConfig.paths) } else { 'ERROR' }
+        
+        $snapshotChanged = $false
+        $savedSnapshot = ''
+        
+        if ($SavedDispatch.ContainsKey($planId)) {
+            $record = $SavedDispatch[$planId]
+            $savedSnapshot = Get-SafeProperty -Object $record -Name 'Snapshot' -Default ''
+            
+            $lastStatus = Resolve-StatusString -Value $record
+            if ([string]::IsNullOrWhiteSpace($lastStatus) -and $runtimeHasRun) {
+                $lastStatus = $runtimeLastStatus
+            }
+        } else {
+            $lastStatus = $runtimeLastStatus
+        }
+        
+        if ($currentSnapshot -notin @('ERROR_ACCESS', 'ERROR_READ', 'ERROR_ALL', '') -and -not [string]::IsNullOrWhiteSpace($savedSnapshot) -and $currentSnapshot -ne $savedSnapshot) {
+            $snapshotChanged = $true
+        }
 
         if (-not $SavedDispatch.ContainsKey($planId)) {
             if ($runtimeHasRun -and $runtimeLastStatus -in @('success', 'mocked')) {
-                Write-Log "Plan [$($state.Name)] dispatch snapshot missing, but runtime state reports last dispatch '$runtimeLastStatus'. Skipping startup re-trigger." 'INFO' 'DarkGray' $state.Name
+                Write-Log "Plan [$($state.Name)] dispatch snapshot missing, but runtime reports success. Skipping startup re-trigger." 'INFO' 'DarkGray' $state.Name
                 continue
             }
-
             Write-Log "Plan [$($state.Name)] has no prior dispatch record. Queuing for re-trigger." 'INFO' 'Cyan' $state.Name
             $needsRetrigger += $planId
             continue
-        }
-
-        $record = $SavedDispatch[$planId]
-        $lastStatus = Resolve-StatusString -Value $record
-        if ([string]::IsNullOrWhiteSpace($lastStatus) -and $runtimeHasRun) {
-            $lastStatus = $runtimeLastStatus
         }
 
         if ($lastStatus -notin @('success', 'mocked')) {
             $reason = if ([string]::IsNullOrWhiteSpace($lastStatus)) { 'no status recorded' } else { "last status was '$lastStatus'" }
             Write-Log "Plan [$($state.Name)] queued for startup re-trigger: $reason." 'INFO' 'Cyan' $state.Name
             $needsRetrigger += $planId
+            continue
+        }
+        
+        if ($snapshotChanged) {
+            Write-Log "Plan [$($state.Name)] queued for startup re-trigger: Folder contents changed while offline (snapshot mismatch)." 'INFO' 'Cyan' $state.Name
+            $needsRetrigger += $planId
+            continue
+        }
+        
+        if ([string]::IsNullOrWhiteSpace($state.Snapshot) -and $currentSnapshot -notmatch 'ERROR') {
+            $state.Snapshot = $currentSnapshot
         }
     }
     return $needsRetrigger
 }
 
 function Invoke-SyntheticRetrigger {
-    <#
-    .SYNOPSIS
-    Inject a synthetic change event so the idle debounce fires for the given plan
-    on the next loop tick without waiting for a real filesystem event.
-
-    .NOTES
-    LastChange is intentionally back-dated by the full idle window so the dispatch
-    fires on the very next loop tick — restarting should not impose a fresh 5-minute
-    wait on a backup that was already missed while the daemon was stopped.
-    Real filesystem events always go through the full debounce; only this synthetic
-    restart path bypasses it.
-    #>
     param([string]$PlanId)
 
     $state = $global:PlanState[$planId]
     if ($null -eq $state) { return }
 
-    # Only inject if there is no real pending batch already (don't overwrite recovered state)
     if ([int]$state.EventCount -gt 0) { return }
 
     $state.BatchNumber    = [int]$state.BatchNumber + 1
     $state.CurrentBatchId = '{0}-B{1:D4}-RESTART' -f $PlanId, [int]$state.BatchNumber
     $state.EventCount     = 1
-    # Back-date by the full idle window so the debounce check passes immediately.
-    # This is the only path that bypasses the debounce — real events never do this.
     $state.LastChange     = [datetime]::Now.AddSeconds(-$global:IdleTimeSeconds)
     $state.LastQueuedAt   = [datetime]::Now
     $state.QueueLogged    = $false
@@ -848,11 +920,20 @@ function Get-SavedPlanState {
         return @{}
     }
 
-    if ($savedPayload.ContainsKey('Plans')) {
-        $planCount = @($savedPayload.Plans.Keys).Count
-        $updatedAt = if ($null -ne $savedPayload.Metadata -and $null -ne $savedPayload.Metadata.UpdatedAt) { $savedPayload.Metadata.UpdatedAt } else { 'unknown' }
+    $plansObj = Get-SafeProperty -Object $savedPayload -Name 'Plans'
+    if ($null -ne $plansObj) {
+        $planCount = 0
+        if ($plansObj -is [System.Collections.IDictionary] -or $plansObj -is [array]) { 
+            $planCount = $plansObj.Count 
+        } else {
+            try { $planCount = @($plansObj.PSObject.Properties).Count } catch {}
+        }
+
+        $metaObj = Get-SafeProperty -Object $savedPayload -Name 'Metadata'
+        $updatedAt = Get-SafeProperty -Object $metaObj -Name 'UpdatedAt' -Default 'unknown'
+
         Write-Log "Loaded previous trigger state from disk. Recovered $planCount plan(s) saved at $updatedAt." 'INFO' 'DarkGray' 'State'
-        return $savedPayload.Plans
+        return $plansObj
     }
 
     Write-Log 'Loaded legacy trigger state from disk.' 'INFO' 'DarkGray' 'State'
@@ -1149,7 +1230,7 @@ try {
                 }
                 catch {
                     try {
-                        $ts = (Get-Date).ToString($script:TsFmt)
+                        $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
                         [System.IO.File]::AppendAllText([string]$Event.MessageData.ErrorLog, "[$ts] [EVENT ERROR] $($_.Exception.Message)`n")
                     }
                     catch {
@@ -1171,13 +1252,18 @@ try {
                         $planState.CurrentBatchId = '{0}-B{1:D4}' -f $planId, [int]$planState.BatchNumber
                     }
 
-                    Write-Log 'Watcher buffer overflow detected. Forcing queue update.' 'WARN' 'Red' $planState.Name
+                    # Write to log dynamically for overflows
+                    $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+                    $pidPad = $PID.ToString().PadRight(5)
+                    $msg = "[$ts] [PID:$pidPad] [WARN] [$($planState.Name)] Watcher buffer overflow detected. Forcing queue update.`n"
+                    [System.IO.File]::AppendAllText([string]$Event.MessageData.ErrorLog, $msg)
+
                     $global:MonitorControl.StateDirty = $true
                     $global:MonitorControl.RuntimeDirty = $true
                 }
                 catch {
                     try {
-                        $ts = (Get-Date).ToString($script:TsFmt)
+                        $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
                         [System.IO.File]::AppendAllText([string]$Event.MessageData.ErrorLog, "[$ts] [EVENT ERROR] $($_.Exception.Message)`n")
                     }
                     catch {
@@ -1210,8 +1296,7 @@ try {
     $savedDispatch = Get-SavedPlanDispatchState
     $savedDispatch = Repair-PlanDispatchSnapshot -SavedDispatch $savedDispatch
     
-    # Wrap the function call in @() to guarantee an array is returned
-    $retriggerIds  = @(Find-PlansNeedingRetrigger -SavedDispatch $savedDispatch)
+    $retriggerIds  = @(Find-PlansNeedingRetrigger -SavedDispatch $savedDispatch -ConfigPlans $plans)
     
     foreach ($rid in $retriggerIds) {
         Invoke-SyntheticRetrigger -PlanId $rid
@@ -1219,11 +1304,11 @@ try {
     if ($retriggerIds.Count -gt 0) {
         Write-Log "Startup re-trigger injected for $($retriggerIds.Count) plan(s): $($retriggerIds -join ', ')" 'INFO' 'Cyan' 'System'
     }
-    # -----------------------------------------------------------------------------
 
     Write-Log 'Waiting for idle bounds...' 'INFO' 'Green' 'System'
 
     $lastResourceLogTime = Get-Date
+    $lastSnapshotEvalTime = Get-Date
 
     while ($true) {
         if (Test-Path -LiteralPath $StopSignalFile) {
@@ -1243,6 +1328,35 @@ try {
         if (($now - $lastResourceLogTime).TotalSeconds -ge $ResourceLogInterval) {
             Write-ResourceLog -State $global:ResourceState -Context 'monitor-loop'
             $lastResourceLogTime = $now
+        }
+
+        # --- 15-Minute Periodic Snapshot Baseline Save ---
+        if (($now - $lastSnapshotEvalTime).TotalSeconds -ge 900) {
+            $lastSnapshotEvalTime = $now
+            $snapshotSaved = $false
+            
+            foreach ($planId in @($global:PlanState.Keys)) {
+                $state = $global:PlanState[$planId]
+                $planConfig = $plans | Where-Object { $_.id -eq $planId } | Select-Object -First 1
+                if ($null -ne $planConfig) {
+                    $currentSnapshot = Get-PlanSnapshotSignature -Paths @($planConfig.paths)
+                    
+                    if ($currentSnapshot -notmatch 'ERROR') {
+                        if ([string]::IsNullOrWhiteSpace($state.Snapshot) -or ($state.EventCount -eq 0 -and $state.LastDispatchStatus -in @('success', 'mocked'))) {
+                            if ($state.Snapshot -ne $currentSnapshot) {
+                                Write-Log "Updating 15-minute baseline snapshot for [$planId]. New Signature=[$currentSnapshot]" 'INFO' 'Cyan' 'System'
+                                $state.Snapshot = $currentSnapshot
+                                $snapshotSaved = $true
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if ($snapshotSaved) {
+                Save-PlanDispatchState
+                Write-Log "Periodic 15-minute snapshot records synced to disk." 'INFO' 'DarkGray' 'System'
+            }
         }
 
         foreach ($planId in @($global:PlanState.Keys)) {
@@ -1311,8 +1425,6 @@ try {
 
             if (-not $apiSuccess) { continue }
 
-            # Reset plan state immediately so the loop keeps watching for new changes.
-            # Operation observation runs in a background job — never blocking the main loop.
             $state.LastBatchId = $batchId
             $state.LastBatchEventCount = $events
             $state.LastDispatchStatus = 'dispatched'
@@ -1336,7 +1448,6 @@ try {
                 Write-Log "Backrest terminal wait skipped in test mode for batch [$batchId]." 'TEST' 'Magenta' $state.Name
             }
             else {
-                # Fire-and-forget background observation — does not block the watcher loop.
                 $observeScript = {
                     param($PlanId, $BatchId, $PlanName, $RequestStartedAt, $Endpoint, $AuthHeader,
                           $OperationModulePath, $LogFile, $ErrorLogFile)
@@ -1417,9 +1528,17 @@ try {
             }
 
             if ($state.LastDispatchStatus -eq 'dispatched') {
-                # Mark as success now that the trigger was accepted; observation result is logged separately.
                 $state.LastDispatchStatus = 'success'
                 $global:MonitorControl.LastSuccessfulDispatch = $state.LastRun
+                
+                $planConfig = $plans | Where-Object { $_.id -eq $planId } | Select-Object -First 1
+                if ($null -ne $planConfig) {
+                    $newSnapshot = Get-PlanSnapshotSignature -Paths @($planConfig.paths)
+                    if ($newSnapshot -notmatch 'ERROR') {
+                        Write-Log "Updating baseline snapshot for [$planId] post-dispatch. Signature=[$newSnapshot]" 'INFO' 'Cyan' 'System'
+                        $state.Snapshot = $newSnapshot
+                    }
+                }
             }
             Set-StateDirty
             Save-TriggerState
