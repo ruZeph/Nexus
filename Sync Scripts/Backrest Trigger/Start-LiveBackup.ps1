@@ -30,6 +30,9 @@ $ResourceLogInterval   = 60
 $StateFlushInterval    = 2
 $RuntimeFlushInterval  = 5
 
+# Shared timestamp format used across all log and state writers in this script.
+$script:TsFmt = 'yyyy-MM-dd HH:mm:ss'
+
 $global:IsTestMode = [bool]$TestMode
 $global:IdleTimeSeconds = $IdleTimeSeconds
 $global:MonitorStartedAt = Get-Date
@@ -46,9 +49,9 @@ $global:MonitorControl = [hashtable]::Synchronized(@{
     MutexName              = $null
 })
 
-if (-not (Test-Path -LiteralPath $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
-if (-not (Test-Path -LiteralPath $ArchiveDir)) { New-Item -ItemType Directory -Path $ArchiveDir -Force | Out-Null }
-if (-not (Test-Path -LiteralPath $StateDir)) { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
+foreach ($dir in @($LogDir, $ArchiveDir, $StateDir)) {
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+}
 
 function Invoke-LogRotation {
     if ($global:IsTestMode) { return }
@@ -67,13 +70,12 @@ function Invoke-LogRotation {
             Remove-Item -Force -ErrorAction SilentlyContinue
     }
     catch {
-        Write-Host "[$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))] [WARN] Failed to rotate log file: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "[$((Get-Date).ToString($script:TsFmt))] [WARN] Failed to rotate log file: $($_.Exception.Message)" -ForegroundColor Yellow
     }
 }
 
 function Invoke-StartupLogArchive {
-    if (-not (Test-Path -LiteralPath $ArchiveDir)) { New-Item -ItemType Directory -Path $ArchiveDir -Force | Out-Null }
-
+    # $ArchiveDir is guaranteed to exist from startup directory initialisation above.
     $timestamp = (Get-Date).ToString('yyyy-MM-dd_HHmmss')
     foreach ($path in @($LogFile, $ErrorLogFile)) {
         if (-not (Test-Path -LiteralPath $path)) { continue }
@@ -89,7 +91,7 @@ function Invoke-StartupLogArchive {
             }
         }
         catch {
-            Write-Host "[$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))] [WARN] Failed to archive old logs: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "[$((Get-Date).ToString($script:TsFmt))] [WARN] Failed to archive old logs: $($_.Exception.Message)" -ForegroundColor Yellow
         }
     }
 
@@ -99,7 +101,7 @@ function Invoke-StartupLogArchive {
             Remove-Item -Force -ErrorAction SilentlyContinue
     }
     catch {
-        Write-Host "[$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))] [WARN] Failed archive retention cleanup: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "[$((Get-Date).ToString($script:TsFmt))] [WARN] Failed archive retention cleanup: $($_.Exception.Message)" -ForegroundColor Yellow
     }
 }
 
@@ -107,7 +109,7 @@ function Write-SessionSeparator {
     $separator = '............................................................'
     foreach ($path in @($LogFile, $ErrorLogFile)) {
         try {
-            [System.IO.File]::AppendAllText($path, "[$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))] $separator`n")
+            [System.IO.File]::AppendAllText($path, "[$((Get-Date).ToString($script:TsFmt))] $separator`n")
         }
         catch {
         }
@@ -122,7 +124,7 @@ function Write-Log {
         [string]$Component = 'System'
     )
 
-    $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    $ts = (Get-Date).ToString($script:TsFmt)
     $pidPad = $PID.ToString().PadRight(5)
     $logLine = "[$ts] [PID:$pidPad] [$Level] [$Component] $Message"
 
@@ -209,6 +211,49 @@ function ConvertFrom-DateValue {
     $parsed = $null
     if ([datetime]::TryParse([string]$Value, [ref]$parsed)) {
         return $parsed
+    }
+
+    return $null
+}
+
+function Resolve-StatusString {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    if ($Value -is [string]) {
+        $s = $Value.Trim()
+        if ([string]::IsNullOrWhiteSpace($s)) { return $null }
+        return $s
+    }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        foreach ($key in @('LastDispatchStatus', 'status', 'Status', 'value', 'Value', 'RawStatus')) {
+            if ($Value.Contains($key)) {
+                $resolved = Resolve-StatusString -Value $Value[$key]
+                if (-not [string]::IsNullOrWhiteSpace([string]$resolved)) {
+                    return $resolved
+                }
+            }
+        }
+
+        return $null
+    }
+
+    try {
+        foreach ($propertyName in @('LastDispatchStatus', 'status', 'Status', 'value', 'Value', 'RawStatus')) {
+            $prop = $Value.PSObject.Properties[$propertyName]
+            if ($null -eq $prop) { continue }
+
+            $resolved = Resolve-StatusString -Value $prop.Value
+            if (-not [string]::IsNullOrWhiteSpace([string]$resolved)) {
+                return $resolved
+            }
+        }
+    }
+    catch {
     }
 
     return $null
@@ -344,7 +389,21 @@ function ConvertTo-HashtableDeep {
         return $ht
     }
 
-    if ($InputObject -is [System.Collections.IEnumerable] -and -not ($InputObject -is [string])) {
+    # Scalars (string, bool, numeric, datetime, enum) must be returned as-is.
+    # Strings satisfy IEnumerable AND have PSObject.Properties (Length, Chars, …) — both
+    # branches must be guarded or a string like "success" gets turned into a hashtable,
+    # zeroing LastDispatchStatus and causing spurious restart re-triggers.
+    if ($InputObject -is [string] -or
+        $InputObject -is [bool]   -or
+        $InputObject -is [int]    -or $InputObject -is [long]   -or
+        $InputObject -is [double] -or $InputObject -is [float]  -or
+        $InputObject -is [decimal]-or
+        $InputObject -is [datetime] -or $InputObject -is [DateTimeOffset] -or
+        $InputObject.GetType().IsEnum) {
+        return $InputObject
+    }
+
+    if ($InputObject -is [System.Collections.IEnumerable]) {
         $items = @()
         foreach ($item in $InputObject) {
             $items += ,(ConvertTo-HashtableDeep -InputObject $item)
@@ -459,14 +518,28 @@ function Get-PersistedPlanStateSnapshot {
     }
 }
 
-function Save-TriggerState {
+function Invoke-SafeStateSave {
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [Parameter(Mandatory = $true)][string]$FailureMessage,
+        [switch]$OnlyWarnWhenForced,
+        [switch]$Force
+    )
     try {
+        & $Action
+    }
+    catch {
+        if (-not $OnlyWarnWhenForced -or $Force) {
+            Write-Log "$FailureMessage $($_.Exception.Message)" 'WARN' 'Yellow' 'State'
+        }
+    }
+}
+
+function Save-TriggerState {
+    Invoke-SafeStateSave -FailureMessage 'Failed to flush state to disk:' -Action {
         Write-JsonFile -Path $StateFile -Data (Get-PersistedPlanStateSnapshot) -Depth 8
         $global:MonitorControl.StateDirty = $false
         $global:MonitorControl.LastStateFlush = Get-Date
-    }
-    catch {
-        Write-Log "Failed to flush state to disk: $($_.Exception.Message)" 'WARN' 'Yellow' 'State'
     }
 }
 
@@ -476,11 +549,12 @@ function Save-RuntimeState {
         [switch]$Force
     )
 
-    try {
+    $capturedStatus = $Status
+    Invoke-SafeStateSave -FailureMessage 'Failed to write runtime heartbeat:' -OnlyWarnWhenForced -Force:$Force -Action {
         $payload = @{
             InstanceId             = $global:MonitorControl.InstanceId
             ProcessId              = $PID
-            Status                 = $Status
+            Status                 = $capturedStatus
             StartedAt              = $global:MonitorStartedAt.ToString('o')
             UpdatedAt              = (Get-Date).ToString('o')
             TestMode               = $global:IsTestMode
@@ -497,12 +571,7 @@ function Save-RuntimeState {
         Write-JsonFile -Path $RuntimeStateFile -Data $payload -Depth 6
         $global:MonitorControl.RuntimeDirty = $false
         $global:MonitorControl.LastRuntimeFlush = Get-Date
-    }
-    catch {
-        if ($Force) {
-            Write-Log "Failed to write runtime heartbeat: $($_.Exception.Message)" 'WARN' 'Yellow' 'State'
-        }
-    }
+    }.GetNewClosure()
 }
 
 function Set-StateDirty {
@@ -554,7 +623,7 @@ function New-PlanRuntimeState {
         LastQueuedAt        = if ($null -ne $savedPlan) { ConvertFrom-DateValue $savedPlan.LastQueuedAt } else { $null }
         LastBatchId         = if ($null -ne $savedPlan) { $savedPlan.LastBatchId } else { $null }
         LastBatchEventCount = if ($null -ne $savedPlan -and $null -ne $savedPlan.LastBatchEventCount) { [int]$savedPlan.LastBatchEventCount } else { 0 }
-        LastDispatchStatus  = if ($null -ne $savedPlan) { $savedPlan.LastDispatchStatus } else { $null }
+        LastDispatchStatus  = if ($null -ne $savedPlan) { Resolve-StatusString -Value $savedPlan.LastDispatchStatus } else { $null }
         PendingPaths        = if ($null -ne $savedPlan -and $savedPlan.PendingPaths) { @($savedPlan.PendingPaths) } else { @() }
         PendingEventTypes   = $pendingTypes
     })
@@ -589,7 +658,7 @@ function Test-ShouldIgnorePath {
 # ---------------------------------------------------------------------------
 
 function Save-PlanDispatchState {
-    try {
+    Invoke-SafeStateSave -FailureMessage 'Failed to save plan dispatch state:' -Action {
         $records = [ordered]@{}
         foreach ($planId in @($global:PlanState.Keys | Sort-Object)) {
             $s = $global:PlanState[$planId]
@@ -612,9 +681,6 @@ function Save-PlanDispatchState {
         }
 
         Write-JsonFile -Path $PlanStateFile -Data $payload -Depth 8
-    }
-    catch {
-        Write-Log "Failed to save plan dispatch state: $($_.Exception.Message)" 'WARN' 'Yellow' 'State'
     }
 }
 
@@ -707,7 +773,7 @@ function Find-PlansNeedingRetrigger {
     $needsRetrigger = @()
     foreach ($planId in @($global:PlanState.Keys)) {
         $state = $global:PlanState[$planId]
-        $runtimeLastStatus = [string]$state.LastDispatchStatus
+        $runtimeLastStatus = Resolve-StatusString -Value $state.LastDispatchStatus
         $runtimeHasRun = -not [string]::IsNullOrWhiteSpace([string]$state.LastRun)
 
         if (-not $SavedDispatch.ContainsKey($planId)) {
@@ -722,13 +788,14 @@ function Find-PlansNeedingRetrigger {
         }
 
         $record = $SavedDispatch[$planId]
-        $lastStatus = [string]$record.LastDispatchStatus
+        $lastStatus = Resolve-StatusString -Value $record
         if ([string]::IsNullOrWhiteSpace($lastStatus) -and $runtimeHasRun) {
             $lastStatus = $runtimeLastStatus
         }
 
         if ($lastStatus -notin @('success', 'mocked')) {
-            Write-Log "Plan [$($state.Name)] last dispatch status was '$lastStatus'. Queuing for re-trigger." 'INFO' 'Cyan' $state.Name
+            $reason = if ([string]::IsNullOrWhiteSpace($lastStatus)) { 'no status recorded' } else { "last status was '$lastStatus'" }
+            Write-Log "Plan [$($state.Name)] queued for startup re-trigger: $reason." 'INFO' 'Cyan' $state.Name
             $needsRetrigger += $planId
         }
     }
@@ -740,6 +807,13 @@ function Invoke-SyntheticRetrigger {
     .SYNOPSIS
     Inject a synthetic change event so the idle debounce fires for the given plan
     on the next loop tick without waiting for a real filesystem event.
+
+    .NOTES
+    LastChange is intentionally back-dated by the full idle window so the dispatch
+    fires on the very next loop tick — restarting should not impose a fresh 5-minute
+    wait on a backup that was already missed while the daemon was stopped.
+    Real filesystem events always go through the full debounce; only this synthetic
+    restart path bypasses it.
     #>
     param([string]$PlanId)
 
@@ -752,7 +826,9 @@ function Invoke-SyntheticRetrigger {
     $state.BatchNumber    = [int]$state.BatchNumber + 1
     $state.CurrentBatchId = '{0}-B{1:D4}-RESTART' -f $PlanId, [int]$state.BatchNumber
     $state.EventCount     = 1
-    $state.LastChange     = [datetime]::Now.AddSeconds(-$global:IdleTimeSeconds)  # make idle window already elapsed
+    # Back-date by the full idle window so the debounce check passes immediately.
+    # This is the only path that bypasses the debounce — real events never do this.
+    $state.LastChange     = [datetime]::Now.AddSeconds(-$global:IdleTimeSeconds)
     $state.LastQueuedAt   = [datetime]::Now
     $state.QueueLogged    = $false
     if (-not $state.PendingEventTypes.ContainsKey('Synthetic')) {
@@ -761,6 +837,8 @@ function Invoke-SyntheticRetrigger {
     $state.PendingEventTypes['Synthetic'] = 1
     $state.PendingPaths = @('[restart-retrigger]')
     Set-StateDirty
+
+    Write-Log "Synthetic restart retrigger injected for [$($state.Name)]. Debounce bypassed intentionally — backup was missed while daemon was stopped. BatchId=[$($state.CurrentBatchId)]" 'INFO' 'Cyan' $state.Name
 }
 
 function Get-SavedPlanState {
@@ -797,21 +875,6 @@ function Read-StopSignalReason {
     }
     catch {
         return 'stop requested'
-    }
-}
-
-function ConvertFrom-UnixMilliseconds {
-    param($Value)
-
-    if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
-        return $null
-    }
-
-    try {
-        return [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$Value).ToLocalTime().DateTime
-    }
-    catch {
-        return $null
     }
 }
 
@@ -927,7 +990,20 @@ try {
                 -HeartbeatFreshSeconds 180 `
                 -RuntimeStateFile $RuntimeStateFile
 
-            if ($detection.IsRunning -and $detection.Confidence -in @('high', 'medium')) {
+            $shouldEarlyExit = $false
+            if ($detection.IsRunning -and $detection.Confidence -eq 'high') {
+                $shouldEarlyExit = $true
+            }
+            elseif (
+                $detection.IsRunning -and
+                $detection.Confidence -eq 'medium' -and
+                $null -ne $detection.Signals -and
+                $detection.Signals.ProcessTableMatch
+            ) {
+                $shouldEarlyExit = $true
+            }
+
+            if ($shouldEarlyExit) {
                 $pidStr = if ($null -ne $detection.ProcessId) { $detection.ProcessId } else { 'unknown' }
                 $ageStr = if ($null -ne $detection.HeartbeatAge) { "$($detection.HeartbeatAge)s" } else { 'N/A' }
                 Write-Log 'Another instance is already running (layered detection). Exiting to prevent overlapping watchers.' 'WARN' 'Yellow' 'Preflight'
@@ -1044,16 +1120,7 @@ try {
                         $fullPath = $pfEventArgs.Name
                     }
 
-                    $name = [IO.Path]::GetFileName([string]$fullPath)
-                    if (
-                        [string]::IsNullOrWhiteSpace([string]$name) -or
-                        $name -match '^(~|\.~)' -or
-                        $name -match '(?i)^(thumbs\.db|desktop\.ini|\.ds_store)$' -or
-                        $name -match '(?i)\.(tmp|temp|bak|swp|swo|lock|part|partial|crdownload|download)$' -or
-                        [string]$fullPath -match '(?i)[\\/](\.git|node_modules\\\.cache|\$RECYCLE\.BIN)[\\/]'
-                    ) {
-                        return
-                    }
+                    if (Test-ShouldIgnorePath -Path ([string]$fullPath)) { return }
 
                     $eventTime = [datetime]::Now
                     if ([int]$planState.EventCount -eq 0) {
@@ -1084,7 +1151,7 @@ try {
                 }
                 catch {
                     try {
-                        $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+                        $ts = (Get-Date).ToString($script:TsFmt)
                         [System.IO.File]::AppendAllText([string]$Event.MessageData.ErrorLog, "[$ts] [EVENT ERROR] $($_.Exception.Message)`n")
                     }
                     catch {
@@ -1112,7 +1179,7 @@ try {
                 }
                 catch {
                     try {
-                        $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+                        $ts = (Get-Date).ToString($script:TsFmt)
                         [System.IO.File]::AppendAllText([string]$Event.MessageData.ErrorLog, "[$ts] [EVENT ERROR] $($_.Exception.Message)`n")
                     }
                     catch {

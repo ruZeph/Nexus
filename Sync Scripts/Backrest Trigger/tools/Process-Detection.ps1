@@ -275,6 +275,22 @@ function Get-WatcherProcessDetails {
     }
 }
 
+function Test-ProcessIsAlive {
+    param([AllowNull()][int]$ProcessId)
+
+    if ($null -eq $ProcessId -or $ProcessId -le 0) {
+        return $false
+    }
+
+    try {
+        $proc = Get-Process -Id $ProcessId -ErrorAction Stop
+        return ($null -ne $proc)
+    }
+    catch {
+        return $false
+    }
+}
+
 function Test-WatcherIsRunning {
     param(
         [Parameter(Mandatory = $true)][string]$LogFile,
@@ -329,6 +345,7 @@ function Test-WatcherIsRunning {
         RuntimeFresh = $false
         MutexBusy = $false
         CommandLineValid = $false
+        DetectedPidAlive = $false
     }
     
     $detectedPid = $null
@@ -383,6 +400,10 @@ function Test-WatcherIsRunning {
         if ($cmdLine -match 'Start-LiveBackup\.ps1') {
             $signals.CommandLineValid = $true
         }
+
+        if (Test-ProcessIsAlive -ProcessId $detectedPid) {
+            $signals.DetectedPidAlive = $true
+        }
     }
     
     # Decision logic: count the signals
@@ -394,23 +415,18 @@ function Test-WatcherIsRunning {
     # At least 2 corroborating signals = likely running.
     # RuntimeFresh is treated similarly to HeartbeatFresh because it is an explicit
     # persisted daemon heartbeat written outside the event callbacks.
-    if ($signalCount -ge 3) {
+    if ($signals.ProcessTableMatch -and $signals.CommandLineValid) {
         $isRunning = $true
         $confidence = 'high'
     }
-    elseif ($signalCount -eq 2) {
-        if (($signals.HeartbeatFresh -or $signals.RuntimeFresh) -and ($signals.ProcessTableMatch -or $signals.MutexBusy)) {
-            $isRunning = $true
-            $confidence = 'medium'
-        }
-        elseif ($signals.ProcessTableMatch -and $signals.CommandLineValid) {
-            $isRunning = $true
-            $confidence = 'high'
-        }
-        elseif ($signals.RuntimeFresh -and $signals.MutexBusy) {
-            $isRunning = $true
-            $confidence = 'high'
-        }
+    elseif ($signals.ProcessTableMatch -and ($signals.HeartbeatFresh -or $signals.RuntimeFresh -or $signals.MutexBusy)) {
+        $isRunning = $true
+        $confidence = 'high'
+    }
+    elseif ($signals.DetectedPidAlive -and ($signals.RuntimeFresh -or $signals.HeartbeatFresh) -and $signals.MutexBusy) {
+        # Conservative fallback when process-table matching is inconclusive.
+        $isRunning = $true
+        $confidence = 'medium'
     }
     
     # Optional: Log resource metrics for health monitoring
