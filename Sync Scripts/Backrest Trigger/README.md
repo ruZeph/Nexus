@@ -1,76 +1,118 @@
 # Backrest Live Backup Trigger
 
-This project turns Backrest plan watching into a long-running Windows-friendly daemon flow instead of a one-shot file watcher.
+A long-running Windows daemon that watches your Backrest source folders in real time, filters filesystem noise, batches changes intelligently, and triggers backups through the Backrest HTTP API — automatically.
 
-It watches the source folders defined in your Backrest config, filters noisy filesystem churn, batches bursty changes, waits for an idle window, and then triggers the matching Backrest plan through the HTTP API.
+The key differentiator: **Offline Change Detection**. Files modified while the daemon was stopped or the PC was asleep are caught and backed up the moment the daemon restarts. Nothing slips through.
 
-## What It Does
+---
 
-- Parses plans from `%APPDATA%\backrest\config.json`
-- Attaches `FileSystemWatcher` instances to each configured plan path
-- Ignores common noise such as `.tmp`, `.lock`, swap, backup, and download artifacts
-- Coalesces rapid file changes into one logical batch per plan
-- Debounces dispatch until the folder is idle
-- Prevents duplicate monitor instances with layered detection plus mutex ownership
-- Persists runtime and batch state under `.state`
-- Supports safe shutdown through `.stop-livebackup`
-- Logs daemon, launcher, and manager activity for long-lived operation
-- Supports detached launch flows for Windows Task Scheduler
+## ✨ Features
 
-## Repo Layout
+| Feature | What it does |
+| --- | --- |
+| **Real-Time Monitoring** | Attaches recursive `FileSystemWatcher` instances to each plan path, filtering `.tmp`, `.lock`, swap files, and other transient noise |
+| **Intelligent Debouncing** | Coalesces bursty file events into a single logical batch, waiting for a configurable idle window before triggering |
+| **Offline Change Detection** | Computes cryptographic folder signatures on shutdown and compares them on startup — any mismatch injects a synthetic retrigger immediately |
+| **Restart Resilience** | Tracks every HTTP dispatch. If the daemon crashes mid-run or a backup times out, the missed backup is automatically queued on next launch |
+| **15-Minute Periodic Baselines** | Continuously syncs folder state to disk during idle periods so the offline baseline stays accurate between restarts |
+| **Process Safety** | Prevents duplicate monitor instances via layered process detection and strict Mutex ownership |
+| **Detached Execution** | Designed to run silently in the background via Windows Task Scheduler |
 
-- [Start-LiveBackup.ps1](</C:/Custom User/Nexus/Sync Scripts/Backrest Trigger/Start-LiveBackup.ps1>): core daemon runner
-- [Launch-LiveBackup.ps1](</C:/Custom User/Nexus/Sync Scripts/Backrest Trigger/Launch-LiveBackup.ps1>): launcher with detached Task Scheduler mode and optional notification window
-- [Test-Suite.ps1](</C:/Custom User/Nexus/Sync Scripts/Backrest Trigger/Test-Suite.ps1>): integration-style reliability harness
-- [tools/Start-BackrestMonitor.ps1](</C:/Custom User/Nexus/Sync Scripts/Backrest Trigger/tools/Start-BackrestMonitor.ps1>): thin scheduler-friendly wrapper
-- [tools/Manage-LiveBackup.ps1](</C:/Custom User/Nexus/Sync Scripts/Backrest Trigger/tools/Manage-LiveBackup.ps1>): interactive manager for status, safe stop, and forced stop
-- [tools/Process-Detection.ps1](</C:/Custom User/Nexus/Sync Scripts/Backrest Trigger/tools/Process-Detection.ps1>): layered detection helpers
+---
 
-## Runtime Flow
+## 📂 Repo Layout
 
-1. The runner loads Backrest plans from `config.json`.
-2. Each valid plan path gets a recursive watcher.
-3. Relevant file events update in-memory plan state and a persisted runtime heartbeat.
-4. When a plan stays quiet for the debounce window, the runner calls `POST /v1.Backrest/Backup` on the configured Backrest endpoint.
-5. After the trigger, the runner queries `GetOperations` to confirm that Backrest observed the plan.
-6. State is flushed to `.state/trigger-state.json`, and clean shutdown writes final runtime metadata.
+```text
+Backrest Trigger/
+├── Start-LiveBackup.ps1          # Core daemon runner and watcher loop
+├── Launch-LiveBackup.ps1         # Launcher with Task Scheduler mode and notification window
+├── Test-Suite.ps1                # Integration-style reliability harness
+└── tools/
+    ├── Start-BackrestMonitor.ps1 # Thin, scheduler-friendly wrapper (the intended trigger target)
+    ├── Manage-LiveBackup.ps1     # Interactive UI: status, safe stop, forced stop
+    └── Process-Detection.ps1     # Layered detection helpers to prevent overlap
+```
 
-## Default Paths
+---
 
-- Backrest config: `%APPDATA%\backrest\config.json`
-- Default API endpoint: `http://localhost:9900/v1.Backrest/Backup`
-- Trigger state: [`.state/trigger-state.json`](</C:/Custom User/Nexus/Sync Scripts/Backrest Trigger/.state/trigger-state.json>)
-- Runtime heartbeat: [`.state/runtime-state.json`](</C:/Custom User/Nexus/Sync Scripts/Backrest Trigger/.state/runtime-state.json>)
-- Main logs: [`logs/runner.log`](</C:/Custom User/Nexus/Sync Scripts/Backrest Trigger/logs/runner.log>) and [`logs/runner-error.log`](</C:/Custom User/Nexus/Sync Scripts/Backrest Trigger/logs/runner-error.log>)
-- Launcher and manager logs: [`logs/manager.log`](</C:/Custom User/Nexus/Sync Scripts/Backrest Trigger/logs/manager.log>) and [`logs/manager-error.log`](</C:/Custom User/Nexus/Sync Scripts/Backrest Trigger/logs/manager-error.log>)
+## ⚙️ Runtime Flow
 
-## Manual Usage
+```text
+Startup
+  └─ Load plans from %APPDATA%\backrest\config.json
+  └─ Compare live folder signatures against .state/plan-dispatch-state.json
+  └─ Queue synthetic retrigger for any plan that changed offline or failed last dispatch
+        │
+        ▼
+Live Monitoring
+  └─ Recursive FileSystemWatcher attached to each source folder
+  └─ Relevant events update in-memory plan state
+  └─ Plan stays quiet for debounce window
+        │
+        ▼
+Trigger
+  └─ POST /v1.Backrest/Backup → Backrest HTTP API
+  └─ Background observer polls GetOperations for terminal status
+  └─ On success: fresh folder signature saved to .state/plan-dispatch-state.json
+        │
+        ▼
+Periodic Maintenance (every 15 min)
+  └─ Baseline snapshots and runtime heartbeats flushed to disk
+```
 
-Run the daemon in the foreground:
+---
+
+## 📁 Default Paths
+
+| Purpose | Path |
+| --- | --- |
+| Backrest config | `%APPDATA%\backrest\config.json` |
+| API endpoint | `http://localhost:9900/v1.Backrest/Backup` |
+| Queued events / runtime data | `.state/trigger-state.json` |
+| Folder signatures (offline detection) | `.state/plan-dispatch-state.json` |
+| Runtime heartbeat | `.state/runtime-state.json` |
+| Daemon logs | `logs/runner.log` · `logs/runner-error.log` |
+| Launcher/manager logs | `logs/manager.log` · `logs/manager-error.log` |
+
+> `.state/` is gitignored — local runtime metadata never leaves your machine.
+
+---
+
+## 🚀 Usage
+
+**Run the daemon directly (foreground):**
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Backrest Trigger\Start-LiveBackup.ps1"
 ```
 
-Run the launcher in the foreground:
+**Run the launcher (foreground):**
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Backrest Trigger\Launch-LiveBackup.ps1"
 ```
 
-Run the detached launcher path without showing the notification window:
+**Run detached / Task Scheduler mode (silent, no notification window):**
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Backrest Trigger\Launch-LiveBackup.ps1" -TaskScheduler -Silent
 ```
 
-Run the integration suite:
+**Open the management UI:**
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Backrest Trigger\tools\Manage-LiveBackup.ps1"
+```
+
+**Run the integration test suite:**
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Backrest Trigger\Test-Suite.ps1"
 ```
 
-## Safe Stop
+---
+
+## 🛑 Safe Stop
 
 Request a clean shutdown by creating the stop file:
 
@@ -78,86 +120,87 @@ Request a clean shutdown by creating the stop file:
 Set-Content -LiteralPath "C:\Custom User\Nexus\Sync Scripts\Backrest Trigger\.stop-livebackup" -Value "Operator requested stop"
 ```
 
-The runner will dispose watchers, flush state, and release the mutex before exiting.
+The runner will gracefully dispose all watchers, flush final snapshots to disk, and release the mutex before exiting.
 
-## Task Scheduler Setup
+You can also trigger a Safe Stop directly from `Manage-LiveBackup.ps1`.
 
-The intended scheduler target is the wrapper script:
+---
 
-- Program/script: `powershell.exe`
-- Add arguments:
+## 📅 Task Scheduler Setup
 
-```text
--NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Backrest Trigger\tools\Start-BackrestMonitor.ps1"
-```
+The intended scheduler target is the thin wrapper script. Configure the task as follows:
 
-You can also register the same wrapper with `schtasks` from PowerShell:
+| Field | Value |
+| --- | --- |
+| **Program/script** | `powershell.exe` |
+| **Arguments** | `-NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Backrest Trigger\tools\Start-BackrestMonitor.ps1"` |
+| **Start in** | `C:\Custom User\Nexus\Sync Scripts\Backrest Trigger` |
+
+**Recommended triggers:**
+
+- At log on
+- At startup
+- On workstation unlock *(re-asserts the monitor after sleep or long idle periods)*
+
+**Register via PowerShell:**
 
 ```powershell
 schtasks /Create /TN "Backrest Live Backup Monitor" /SC ONLOGON /RL HIGHEST /F /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"C:\Custom User\Nexus\Sync Scripts\Backrest Trigger\tools\Start-BackrestMonitor.ps1`""
 ```
 
-- Start in:
+**Optional environment variable:**
+
+Set `BACKREST_TRIGGER_LAUNCHER` to point the wrapper at a custom launcher script. If unset, it falls back to `Launch-LiveBackup.ps1` in this repo.
+
+---
+
+## 🖥️ Management UI
+
+`Manage-LiveBackup.ps1` provides an interactive dashboard showing:
+
+- Current scheduler state and latest scheduler action
+- Runtime heartbeat state
+- Detected live monitor process details
+- Safe-stop and forced-stop controls
+
+---
+
+## 📋 Reading the Logs
+
+A healthy trigger flow produces this sequence:
+
+**On startup (offline detection active):**
 
 ```text
-C:\Custom User\Nexus\Sync Scripts\Backrest Trigger
+Loaded plan dispatch snapshot from disk...
+Folder contents changed while offline (snapshot mismatch).
+Synthetic restart retrigger injected...
 ```
 
-Recommended trigger styles:
+**During live operation:**
 
-- At log on
-- At startup
-- On workstation unlock if you want the monitor re-asserted after long idle periods
-
-Optional user environment variable:
-
-- `BACKREST_TRIGGER_LAUNCHER`
-
-If unset, the wrapper falls back to [Launch-LiveBackup.ps1](</C:/Custom User/Nexus/Sync Scripts/Backrest Trigger/Launch-LiveBackup.ps1>) in this repo.
-
-## Notification Behavior
-
-- `Launch-LiveBackup.ps1 -TaskScheduler` can show a lightweight notification window once the detached monitor is confirmed alive.
-- Add `-Silent` to suppress that window for quiet scheduled runs.
-- Detached startup stdout and stderr are archived under `logs/launcher/start`.
-
-## Monitoring and Recovery
-
-Open the manager UI:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Custom User\Nexus\Sync Scripts\Backrest Trigger\tools\Manage-LiveBackup.ps1"
+```text
+Attached FileSystemWatcher
+Coalesced events queued
+Batch flush: Triggering
+Backrest accepted trigger request
+Updating baseline snapshot for [...] post-dispatch.
+Background observation started... → Backrest operation reached terminal status
 ```
 
-The manager shows:
+**On clean shutdown:**
 
-- current scheduler state
-- latest scheduler action
-- runtime heartbeat state
-- detected live monitor process details
-- safe-stop and forced-stop controls
+```text
+Shutdown complete
+```
 
-## What To Look For In Logs
+---
 
-Healthy trigger flow for a plan should look like this:
+## 📝 Notes
 
-1. `Attached FileSystemWatcher`
-2. `Coalesced events queued`
-3. `Batch flush: Triggering`
-4. `Backrest accepted trigger request` or timeout warning
-5. `Backrest operation observed`
-6. `Shutdown complete` when stopped
+- Backrest plan `name` is optional. If absent, the plan `id` is used as the identifier.
+- A timed-out `Backup` HTTP request is **not** treated as a failure. Backrest frequently continues the job in the background. The background observer waits up to 30 minutes to confirm the final status.
+- Detached launcher stdout/stderr is archived under `logs/launcher/start`.
+- Launcher notifications (the confirmation window) can be suppressed with `-Silent`.
 
-## Notes
-
-- Backrest plan `name` is treated as optional. If absent, the plan `id` is used.
-- A timed-out `Backup` HTTP request is not automatically a failure. Backrest can continue the backup in the background.
-- `.state/*` is ignored by git so local runtime metadata stays local.
-
-## Verification Status
-
-Validated in this repo with:
-
-- the full integration harness in [Test-Suite.ps1](</C:/Custom User/Nexus/Sync Scripts/Backrest Trigger/Test-Suite.ps1>)
-- detached launcher smoke testing in `-TaskScheduler -Silent -TestMode`
-- live production verification against the `Windows-Icons` plan on port `9900`
+---
