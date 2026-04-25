@@ -84,20 +84,45 @@ function Wait-BackrestOperationFinalStatus {
         [Parameter(Mandatory = $true)][string]$Endpoint,
         [hashtable]$Headers = @{},
         [int]$TimeoutSeconds = 1800,
-        [int]$PollIntervalSeconds = 5
+        [int]$PollIntervalSeconds = 5,
+        [int]$CorrelationSkewSeconds = 120
     )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $correlationFloor = $Since.AddSeconds(-1 * [math]::Abs($CorrelationSkewSeconds))
+
     do {
         $latestOperation = & $OperationFetcher -PlanId $PlanId -Endpoint $Endpoint -Headers $Headers
         if ($null -ne $latestOperation) {
             $startTime = ConvertFrom-UnixMilliseconds $latestOperation.unixTimeStartMs
-            if ($null -eq $startTime -or $startTime -ge $Since.AddSeconds(-2)) {
+            $endTime = $null
+            foreach ($propertyName in @('unixTimeEndMs', 'endUnixTimeMs')) {
+                if ($latestOperation.PSObject.Properties.Match($propertyName).Count -gt 0) {
+                    $endTime = ConvertFrom-UnixMilliseconds $latestOperation.$propertyName
+                    if ($null -ne $endTime) { break }
+                }
+            }
+
+            $isCorrelated = $false
+            if ($null -eq $startTime) {
+                # Some Backrest payloads omit/rename start timestamps; do not hard-fail correlation.
+                $isCorrelated = $true
+            }
+            elseif ($startTime -ge $correlationFloor) {
+                $isCorrelated = $true
+            }
+            elseif ($null -ne $endTime -and $endTime -ge $correlationFloor) {
+                # Allow terminal operations that started slightly earlier but completed in our window.
+                $isCorrelated = $true
+            }
+
+            if ($isCorrelated) {
                 $statusDetails = Get-BackrestOperationStatusDetails -Operation $latestOperation
                 if ($statusDetails.IsTerminal) {
                     return [pscustomobject]@{
                         Operation = $latestOperation
                         StartTime = $startTime
+                        EndTime = $endTime
                         RawStatus = $statusDetails.RawStatus
                         NormalizedStatus = $statusDetails.NormalizedStatus
                         Outcome = $statusDetails.Outcome

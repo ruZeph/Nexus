@@ -214,6 +214,99 @@ function ConvertFrom-DateValue {
     return $null
 }
 
+function ConvertTo-PrettyJsonString {
+    param(
+        [Parameter(Mandatory = $true)][string]$Json,
+        [int]$IndentSize = 2
+    )
+
+    $sb = New-Object System.Text.StringBuilder
+    $indent = 0
+    $inString = $false
+    $escaping = $false
+
+    for ($i = 0; $i -lt $Json.Length; $i++) {
+        $ch = [string]$Json[$i]
+
+        if ($inString) {
+            [void]$sb.Append($ch)
+
+            if ($escaping) {
+                $escaping = $false
+                continue
+            }
+
+            if ($ch -eq '\\') {
+                $escaping = $true
+            }
+            elseif ($ch -eq '"') {
+                $inString = $false
+            }
+            continue
+        }
+
+        if ($ch -match '\s') {
+            continue
+        }
+
+        switch ($ch) {
+            '"' {
+                $inString = $true
+                [void]$sb.Append($ch)
+            }
+            '{' {
+                if (($i + 1) -lt $Json.Length -and [string]$Json[$i + 1] -eq '}') {
+                    [void]$sb.Append('{}')
+                    $i++
+                    continue
+                }
+
+                [void]$sb.Append('{')
+                [void]$sb.AppendLine()
+                $indent++
+                [void]$sb.Append((' ' * ($indent * $IndentSize)))
+            }
+            '[' {
+                if (($i + 1) -lt $Json.Length -and [string]$Json[$i + 1] -eq ']') {
+                    [void]$sb.Append('[]')
+                    $i++
+                    continue
+                }
+
+                [void]$sb.Append('[')
+                [void]$sb.AppendLine()
+                $indent++
+                [void]$sb.Append((' ' * ($indent * $IndentSize)))
+            }
+            '}' {
+                [void]$sb.AppendLine()
+                $indent = [Math]::Max(0, $indent - 1)
+                [void]$sb.Append((' ' * ($indent * $IndentSize)))
+                [void]$sb.Append('}')
+            }
+            ']' {
+                [void]$sb.AppendLine()
+                $indent = [Math]::Max(0, $indent - 1)
+                [void]$sb.Append((' ' * ($indent * $IndentSize)))
+                [void]$sb.Append(']')
+            }
+            ',' {
+                [void]$sb.Append(',')
+                [void]$sb.AppendLine()
+                [void]$sb.Append((' ' * ($indent * $IndentSize)))
+            }
+            ':' {
+                [void]$sb.Append(': ')
+            }
+            default {
+                [void]$sb.Append($ch)
+            }
+        }
+    }
+
+    return ($sb.ToString().TrimEnd())
+}
+
 function Write-JsonFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -221,8 +314,106 @@ function Write-JsonFile {
         [int]$Depth = 8
     )
 
-    $json = $Data | ConvertTo-Json -Depth $Depth
-    [System.IO.File]::WriteAllText($Path, $json, [System.Text.UTF8Encoding]::new($false))
+    $compactJson = $Data | ConvertTo-Json -Depth $Depth -Compress
+    $json = ConvertTo-PrettyJsonString -Json $compactJson -IndentSize 2
+    $encoding = [System.Text.UTF8Encoding]::new($false)
+    $tempPath = "$Path.tmp"
+    $backupPath = "$Path.bak"
+
+    [System.IO.File]::WriteAllText($tempPath, $json, $encoding)
+    if (Test-Path -LiteralPath $Path) {
+        [System.IO.File]::Replace($tempPath, $Path, $backupPath, $true)
+    }
+    else {
+        [System.IO.File]::Move($tempPath, $Path)
+    }
+}
+
+function ConvertTo-HashtableDeep {
+    param([AllowNull()]$InputObject)
+
+    if ($null -eq $InputObject) {
+        return $null
+    }
+
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        $ht = @{}
+        foreach ($key in $InputObject.Keys) {
+            $ht[[string]$key] = ConvertTo-HashtableDeep -InputObject $InputObject[$key]
+        }
+        return $ht
+    }
+
+    if ($InputObject -is [System.Collections.IEnumerable] -and -not ($InputObject -is [string])) {
+        $items = @()
+        foreach ($item in $InputObject) {
+            $items += ,(ConvertTo-HashtableDeep -InputObject $item)
+        }
+        return $items
+    }
+
+    $properties = @()
+    try {
+        $properties = @($InputObject.PSObject.Properties)
+    }
+    catch {
+        $properties = @()
+    }
+
+    if ($properties.Count -gt 0) {
+        $ht = @{}
+        foreach ($property in $properties) {
+            if ($null -eq $property -or [string]::IsNullOrWhiteSpace([string]$property.Name)) {
+                continue
+            }
+
+            if ($property.MemberType -notin @('NoteProperty', 'Property', 'AliasProperty', 'ScriptProperty')) {
+                continue
+            }
+
+            $ht[$property.Name] = ConvertTo-HashtableDeep -InputObject $property.Value
+        }
+
+        if ($ht.Count -gt 0) {
+            return $ht
+        }
+    }
+
+    return $InputObject
+}
+
+function Read-JsonHashtableWithBackup {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string]$Component = 'State'
+    )
+
+    $candidates = @($Path, "$Path.bak")
+    $parseErrors = @()
+
+    foreach ($candidate in $candidates) {
+        if (-not (Test-Path -LiteralPath $candidate)) {
+            continue
+        }
+
+        try {
+            $rawPayload = Get-Content -LiteralPath $candidate -Raw | ConvertFrom-Json
+            $payload = ConvertTo-HashtableDeep -InputObject $rawPayload
+            if ($candidate -ne $Path) {
+                Write-Log "Primary state file parse failed earlier. Recovered from backup: $candidate" 'WARN' 'Yellow' $Component
+            }
+            return $payload
+        }
+        catch {
+            $parseErrors += "$candidate => $($_.Exception.Message)"
+        }
+    }
+
+    if ($parseErrors.Count -gt 0) {
+        Write-Log "Failed to parse state payload(s). Details: $($parseErrors -join ' | ')" 'WARN' 'Yellow' $Component
+    }
+
+    return $null
 }
 
 function Get-PendingEventTypeSnapshot {
@@ -331,9 +522,24 @@ function New-PlanRuntimeState {
     }
 
     $pendingTypes = [hashtable]::Synchronized(@{})
-    if ($null -ne $savedPlan -and $savedPlan.PendingEventTypes) {
-        foreach ($key in @($savedPlan.PendingEventTypes.Keys)) {
-            $pendingTypes[$key] = [int]$savedPlan.PendingEventTypes[$key]
+    if ($null -ne $savedPlan -and $null -ne $savedPlan.PendingEventTypes) {
+        $pendingSource = $savedPlan.PendingEventTypes
+
+        if ($pendingSource -is [System.Collections.IDictionary]) {
+            foreach ($key in @($pendingSource.Keys)) {
+                $pendingTypes[[string]$key] = [int]$pendingSource[$key]
+            }
+        }
+        else {
+            foreach ($prop in @($pendingSource.PSObject.Properties)) {
+                if ($null -eq $prop -or [string]::IsNullOrWhiteSpace([string]$prop.Name)) {
+                    continue
+                }
+                if ($prop.MemberType -notin @('NoteProperty', 'Property', 'AliasProperty', 'ScriptProperty')) {
+                    continue
+                }
+                $pendingTypes[[string]$prop.Name] = [int]$prop.Value
+            }
         }
     }
 
@@ -384,10 +590,10 @@ function Test-ShouldIgnorePath {
 
 function Save-PlanDispatchState {
     try {
-        $records = @{}
+        $records = [ordered]@{}
         foreach ($planId in @($global:PlanState.Keys | Sort-Object)) {
             $s = $global:PlanState[$planId]
-            $records[$planId] = @{
+            $records[$planId] = [ordered]@{
                 Name               = $s.Name
                 LastRun            = $s.LastRun
                 LastBatchId        = $s.LastBatchId
@@ -395,7 +601,17 @@ function Save-PlanDispatchState {
                 SavedAt            = (Get-Date).ToString('o')
             }
         }
-        Write-JsonFile -Path $PlanStateFile -Data @{ Plans = $records } -Depth 6
+
+        $payload = [ordered]@{
+            Metadata = [ordered]@{
+                UpdatedAt  = (Get-Date).ToString('o')
+                InstanceId = $global:MonitorControl.InstanceId
+                ProcessId  = $PID
+            }
+            Plans = $records
+        }
+
+        Write-JsonFile -Path $PlanStateFile -Data $payload -Depth 8
     }
     catch {
         Write-Log "Failed to save plan dispatch state: $($_.Exception.Message)" 'WARN' 'Yellow' 'State'
@@ -403,15 +619,75 @@ function Save-PlanDispatchState {
 }
 
 function Get-SavedPlanDispatchState {
-    if (-not (Test-Path -LiteralPath $PlanStateFile)) { return @{} }
-    try {
-        $payload = Get-Content -LiteralPath $PlanStateFile -Raw | ConvertFrom-Json -AsHashtable
-        if ($payload.ContainsKey('Plans')) { return $payload.Plans }
+    if (-not (Test-Path -LiteralPath $PlanStateFile) -and -not (Test-Path -LiteralPath "$PlanStateFile.bak")) {
         return @{}
     }
-    catch {
-        return @{}
+
+    $payload = Read-JsonHashtableWithBackup -Path $PlanStateFile -Component 'State'
+    if ($null -eq $payload) { return @{} }
+
+    if ($payload.ContainsKey('Plans')) {
+        return $payload.Plans
     }
+
+    return @{}
+}
+
+function Repair-PlanDispatchSnapshot {
+    <#
+    .SYNOPSIS
+    RClone-style snapshot repair for restart detection.
+
+    .DESCRIPTION
+    If plan-dispatch-state is missing, incomplete, or stale for currently loaded
+    plans, hydrate missing records from in-memory plan runtime state (which is
+    already restored from trigger-state on startup). This prevents false
+    startup re-triggers caused by a missing/partial dispatch snapshot.
+    #>
+    param([hashtable]$SavedDispatch = @{})
+
+    $repaired = @{}
+    foreach ($existingPlanId in @($SavedDispatch.Keys)) {
+        $repaired[$existingPlanId] = $SavedDispatch[$existingPlanId]
+    }
+
+    $added = 0
+    $updated = 0
+
+    foreach ($planId in @($global:PlanState.Keys)) {
+        $state = $global:PlanState[$planId]
+        if ($null -eq $state) { continue }
+
+        $candidate = [ordered]@{
+            Name               = $state.Name
+            LastRun            = $state.LastRun
+            LastBatchId        = $state.LastBatchId
+            LastDispatchStatus = $state.LastDispatchStatus
+            SavedAt            = (Get-Date).ToString('o')
+        }
+
+        if (-not $repaired.ContainsKey($planId)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$state.LastDispatchStatus) -or -not [string]::IsNullOrWhiteSpace([string]$state.LastRun)) {
+                $repaired[$planId] = $candidate
+                $added++
+            }
+            continue
+        }
+
+        $existing = $repaired[$planId]
+        $existingStatus = if ($null -ne $existing) { [string]$existing.LastDispatchStatus } else { '' }
+        if ([string]::IsNullOrWhiteSpace($existingStatus) -and -not [string]::IsNullOrWhiteSpace([string]$state.LastDispatchStatus)) {
+            $repaired[$planId] = $candidate
+            $updated++
+        }
+    }
+
+    if ($added -gt 0 -or $updated -gt 0) {
+        Write-Log "Dispatch snapshot repair applied: added=$added updated=$updated" 'INFO' 'DarkGray' 'State'
+        Save-PlanDispatchState
+    }
+
+    return $repaired
 }
 
 function Find-PlansNeedingRetrigger {
@@ -431,8 +707,15 @@ function Find-PlansNeedingRetrigger {
     $needsRetrigger = @()
     foreach ($planId in @($global:PlanState.Keys)) {
         $state = $global:PlanState[$planId]
+        $runtimeLastStatus = [string]$state.LastDispatchStatus
+        $runtimeHasRun = -not [string]::IsNullOrWhiteSpace([string]$state.LastRun)
 
         if (-not $SavedDispatch.ContainsKey($planId)) {
+            if ($runtimeHasRun -and $runtimeLastStatus -in @('success', 'mocked')) {
+                Write-Log "Plan [$($state.Name)] dispatch snapshot missing, but runtime state reports last dispatch '$runtimeLastStatus'. Skipping startup re-trigger." 'INFO' 'DarkGray' $state.Name
+                continue
+            }
+
             Write-Log "Plan [$($state.Name)] has no prior dispatch record. Queuing for re-trigger." 'INFO' 'Cyan' $state.Name
             $needsRetrigger += $planId
             continue
@@ -440,6 +723,10 @@ function Find-PlansNeedingRetrigger {
 
         $record = $SavedDispatch[$planId]
         $lastStatus = [string]$record.LastDispatchStatus
+        if ([string]::IsNullOrWhiteSpace($lastStatus) -and $runtimeHasRun) {
+            $lastStatus = $runtimeLastStatus
+        }
+
         if ($lastStatus -notin @('success', 'mocked')) {
             Write-Log "Plan [$($state.Name)] last dispatch status was '$lastStatus'. Queuing for re-trigger." 'INFO' 'Cyan' $state.Name
             $needsRetrigger += $planId
@@ -477,22 +764,23 @@ function Invoke-SyntheticRetrigger {
 }
 
 function Get-SavedPlanState {
-    if (-not (Test-Path -LiteralPath $StateFile)) { return @{} }
-
-    try {
-        $savedPayload = Get-Content -LiteralPath $StateFile -Raw | ConvertFrom-Json -AsHashtable
-        if ($savedPayload.ContainsKey('Plans')) {
-            Write-Log 'Loaded previous trigger state from disk.' 'INFO' 'DarkGray' 'State'
-            return $savedPayload.Plans
-        }
-
-        Write-Log 'Loaded legacy trigger state from disk.' 'INFO' 'DarkGray' 'State'
-        return $savedPayload
-    }
-    catch {
-        Write-Log 'Failed to parse state file. Starting fresh.' 'WARN' 'Yellow' 'State'
+    if (-not (Test-Path -LiteralPath $StateFile) -and -not (Test-Path -LiteralPath "$StateFile.bak")) {
         return @{}
     }
+
+    $savedPayload = Read-JsonHashtableWithBackup -Path $StateFile -Component 'State'
+    if ($null -eq $savedPayload) {
+        Write-Log 'Failed to parse state file and backup. Starting fresh.' 'WARN' 'Yellow' 'State'
+        return @{}
+    }
+
+    if ($savedPayload.ContainsKey('Plans')) {
+        Write-Log 'Loaded previous trigger state from disk.' 'INFO' 'DarkGray' 'State'
+        return $savedPayload.Plans
+    }
+
+    Write-Log 'Loaded legacy trigger state from disk.' 'INFO' 'DarkGray' 'State'
+    return $savedPayload
 }
 
 function Read-StopSignalReason {
@@ -655,8 +943,16 @@ try {
     }
 
     $mutexCreated = $false
-    $mutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$mutexCreated)
-    $mutexOwned = [bool]$mutexCreated
+    $mutex = [System.Threading.Mutex]::new($false, $mutexName, [ref]$mutexCreated)
+
+    try {
+        $mutexOwned = $mutex.WaitOne(0)
+    }
+    catch [System.Threading.AbandonedMutexException] {
+        # Previous owner was terminated abruptly (e.g. force stop). Recover ownership and continue.
+        $mutexOwned = $true
+        Write-Log 'Recovered abandoned monitor mutex after abrupt previous termination.' 'WARN' 'Yellow' 'Preflight'
+    }
 
     if (-not $mutexOwned) {
         Write-Log 'Another instance is already running (Mutex held). Exiting to prevent overlapping watchers.' 'WARN' 'Yellow' 'Preflight'
@@ -847,6 +1143,7 @@ try {
 
     # --- Restart-resilience: check for plans that need re-triggering on startup ---
     $savedDispatch = Get-SavedPlanDispatchState
+    $savedDispatch = Repair-PlanDispatchSnapshot -SavedDispatch $savedDispatch
     $retriggerIds  = Find-PlansNeedingRetrigger -SavedDispatch $savedDispatch
     foreach ($rid in $retriggerIds) {
         Invoke-SyntheticRetrigger -PlanId $rid

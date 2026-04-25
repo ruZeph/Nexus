@@ -85,15 +85,24 @@ function Get-MutexState {
     }
     
     $mutex = $null
+    $ownsMutex = $false
     try {
         $mutex = [System.Threading.Mutex]::new($false, $MutexName)
-        if (-not $mutex.WaitOne(0)) {
+        try {
+            $ownsMutex = $mutex.WaitOne(0)
+        }
+        catch [System.Threading.AbandonedMutexException] {
+            # Treat abandoned mutex as recoverable/free for liveness probing.
+            $ownsMutex = $true
+            $result.Message = 'Mutex was abandoned by a previous instance; considered recoverable/free.'
+        }
+
+        if (-not $ownsMutex) {
             $result.IsBusy = $true
             $result.Message = 'Mutex is owned by another active instance.'
             return $result
         }
-        
-        $mutex.ReleaseMutex() | Out-Null
+
         return $result
     }
     catch [System.UnauthorizedAccessException] {
@@ -107,6 +116,14 @@ function Get-MutexState {
         return $result
     }
     finally {
+        if ($ownsMutex -and $null -ne $mutex) {
+            try {
+                $mutex.ReleaseMutex() | Out-Null
+            }
+            catch {
+            }
+        }
+
         if ($null -ne $mutex) {
             $mutex.Dispose()
         }
