@@ -907,7 +907,7 @@ function Invoke-SyntheticRetrigger {
     $state.PendingPaths = @('[restart-retrigger]')
     Set-StateDirty
 
-    Write-Log "Synthetic restart retrigger injected for [$($state.Name)]. Debounce bypassed intentionally — backup was missed while daemon was stopped. BatchId=[$($state.CurrentBatchId)]" 'INFO' 'Cyan' $state.Name
+    Write-Log "Synthetic restart retrigger injected for [$($state.Name)]. Debounce bypassed intentionally - backup was missed while daemon was stopped. BatchId=[$($state.CurrentBatchId)]" 'INFO' 'Cyan' $state.Name
 }
 
 function Get-SavedPlanState {
