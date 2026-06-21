@@ -106,6 +106,7 @@ function Resolve-InstallPath {
         }
         else {
             $selectedPath = $inputPath
+            $selectedPath = $selectedPath.Trim('"', "'") 
         }
     }
 
@@ -325,7 +326,7 @@ try {
 
     Initialize-Rclone -SkipInstall:$SkipRcloneInstall
 
-    $baseUrl = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/$RepoBranch/Sync%20Scripts"
+    $baseUrl = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/$RepoBranch/Sync%20Scripts/RClone%20Sync"
     # Cache-buster to bypass GitHub CDN on repeated installs
     $cacheBuster = "?v=$(Get-Date -UFormat %s)"
     $files = @(
