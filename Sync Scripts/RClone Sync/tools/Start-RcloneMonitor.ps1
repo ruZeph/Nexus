@@ -8,23 +8,43 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+Add-Type -AssemblyName System.Windows.Forms
+
+function Show-ErrorDialog {
+    param([string]$Message)
+    [System.Windows.Forms.MessageBox]::Show(
+        $Message,
+        'Nexus Sync — Startup Error',
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Error
+    ) | Out-Null
+}
+
 $launcher = [Environment]::GetEnvironmentVariable('RCLONE_SYNC_LAUNCHER', 'User')
 $configPath = [Environment]::GetEnvironmentVariable('RCLONE_SYNC_CONFIG_PATH', 'User')
 
 if ([string]::IsNullOrWhiteSpace($launcher)) {
-    throw 'Missing RCLONE_SYNC_LAUNCHER user environment variable.'
+    $msg = 'Missing RCLONE_SYNC_LAUNCHER user environment variable.'
+    Show-ErrorDialog $msg
+    throw $msg
 }
 
 if ([string]::IsNullOrWhiteSpace($configPath)) {
-    throw 'Missing RCLONE_SYNC_CONFIG_PATH user environment variable.'
+    $msg = 'Missing RCLONE_SYNC_CONFIG_PATH user environment variable.'
+    Show-ErrorDialog $msg
+    throw $msg
 }
 
 if (-not (Test-Path -LiteralPath $launcher)) {
-    throw "Launcher script not found: $launcher"
+    $msg = "Launcher script not found:`n$launcher"
+    Show-ErrorDialog $msg
+    throw $msg
 }
 
 if (-not (Test-Path -LiteralPath $configPath)) {
-    throw "Config file not found: $configPath"
+    $msg = "Config file not found:`n$configPath"
+    Show-ErrorDialog $msg
+    throw $msg
 }
 
 & $launcher -ConfigPath $configPath -Mode $Mode -TaskScheduler -Silent:$Silent -IdleTimeSeconds $IdleTimeSeconds

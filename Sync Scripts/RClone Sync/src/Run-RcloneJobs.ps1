@@ -2316,7 +2316,7 @@ try {
             Remove-OldJobLog -JobLogDir $jobLogDir -KeepCount $jobLogRetentionCount
             $logMsg = "Job log file: $jobLog"
             Write-RunnerLog -LogDir $LogDir -Message $logMsg
-            Write-ShellMessage -Message $logMsg -IsSilent $IsSilent
+            Write-ShellMessage -Message $logMsg -IsSilent $Silent
 
             $source = [string](Get-ConfigProperty -Object $job -Name 'source')
             $dest = [string](Get-ConfigProperty -Object $job -Name 'dest')
@@ -2418,7 +2418,7 @@ try {
                 $jobLog = New-JobLogFile -RootLogDir $logDir -JobSafeName $fallbackName
                 $fallbackMsg = "Job log file: $jobLog"
                 Write-RunnerLog -LogDir $LogDir -Message $fallbackMsg
-                Write-ShellMessage -Message $fallbackMsg -IsSilent $IsSilent
+                Write-ShellMessage -Message $fallbackMsg -IsSilent $Silent
             }
 
             Write-JobLog -LogFile $jobLog -Message "ERROR $($_.Exception.Message)"

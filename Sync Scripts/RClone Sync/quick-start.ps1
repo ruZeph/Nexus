@@ -118,7 +118,9 @@ function Resolve-InstallPath {
         $selectedPath = Join-Path $defaultPath $selectedPath
     }
 
-    return [System.IO.Path]::GetFullPath($selectedPath)
+    $selectedPath = [System.IO.Path]::GetFullPath($selectedPath)
+    return (Join-Path $selectedPath 'RClone Sync')
+
 }
 
 function Get-SetupSelections {
@@ -126,7 +128,7 @@ function Get-SetupSelections {
 
     $selection = [pscustomobject]@{
         ConfigMode = 'default'
-        Force = $DefaultForce
+        Force      = $DefaultForce
     }
 
     if (-not [Environment]::UserInteractive) {
@@ -183,10 +185,10 @@ function New-BlankConfig {
     return [pscustomobject]@{
         settings = [pscustomobject]@{
             continueOnJobError = $true
-            defaultOperation = 'sync'
-            logRetentionCount = 10
+            defaultOperation   = 'sync'
+            logRetentionCount  = 10
             jobIntervalSeconds = 30
-            defaultExtraArgs = @('--retries', '15', '--retries-sleep', '30s')
+            defaultExtraArgs   = @('--retries', '15', '--retries-sleep', '30s')
         }
         profiles = [pscustomobject]@{
             default = [pscustomobject]@{
@@ -194,7 +196,7 @@ function New-BlankConfig {
                 extraArgs = @('--fast-list', '--transfers', '8')
             }
         }
-        jobs = @()
+        jobs     = @()
     }
 }
 
