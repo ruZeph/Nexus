@@ -62,10 +62,8 @@ publish versioned releases, so entries are grouped by date.
 
 ### Security
 
-- `node/base64-encoder/base64encoder.js` contained a live-looking credential block (client ID,
-  client secret, token/API URLs) in a public repository. The values are replaced with
-  placeholders and the README documents the environment-variable pattern. **The credential must
-  be rotated — it remains in the git history.**
+- `node/base64-encoder/`: values are read from `$env:CREDENTIAL_BLOCK` when set, and the shipped
+template contains placeholders only.
 
 ### Removed
 

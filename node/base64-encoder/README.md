@@ -17,18 +17,18 @@ node base64encoder.js
 Output is a URL-safe Base64 string (`base64url`: `+`→`-`, `/`→`_`, no padding), matching what
 `Buffer.toString('base64url')` produces.
 
-## Security note
+## Notes
 
-The committed template deliberately contains **placeholders, not real values**. Keep it that
-way:
+The template in `base64encoder.js` is a **placeholder** — field names only. Supply the real
+values through the `CREDENTIAL_BLOCK` environment variable:
 
-- never paste a live client secret / API key into this file;
-- pass secrets through an environment variable instead:
-
-```js
-const originalString = process.env.CREDENTIAL_BLOCK;
-console.log(Buffer.from(originalString, 'utf-8').toString('base64url'));
+```bash
+CREDENTIAL_BLOCK="$SOME_VALUE" node base64encoder.js     # bash
 ```
 
-If a real secret is ever committed, rotate it — rewriting history is not enough once the
-repository has been pushed.
+```powershell
+$env:CREDENTIAL_BLOCK = '<block>'; node base64encoder.js  # PowerShell
+```
+
+Keep credentials out of the working tree: this file is committed, and anything written into it
+ends up in shared history.
