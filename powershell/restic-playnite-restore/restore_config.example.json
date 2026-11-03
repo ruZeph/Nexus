@@ -1,0 +1,15 @@
+{
+  "DataDir": "C:\\Users\\Avisek\\AppData\\Roaming\\Playnite\\",
+  "RestoreItems": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "LibraryDir": "C:\\Users\\Avisek\\AppData\\Roaming\\Playnite\\library",
+  "ClosedWhenDone": true,
+  "BackupFile": "C:\\Custom User\\Backups\\Playnite Backups\\PlayniteBackup-2026-06-25-23-18-08.zip",
+  "CancelIfGameRunning": true
+}

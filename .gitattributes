@@ -1,0 +1,20 @@
+# Line endings are content here.
+#
+# This is a Windows toolkit: .ps1 / .bat / .cmd / .vbs files are CRLF on disk and several of
+# them are byte-sensitive (scheduled-task command lines, batch labels). Git is therefore told
+# not to normalise anything (`-text`), so a clone on any platform yields byte-identical files
+# and no phantom "whole file changed" diffs.
+#
+# Binary assets are marked explicitly for storage/diff purposes.
+
+* -text
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.7z binary
+*.exe binary
+*.dll binary

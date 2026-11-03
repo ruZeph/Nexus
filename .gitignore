@@ -1,0 +1,27 @@
+# PyCharm IDE files
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# logs
+*logs/*
+*/logs/*
+*.log
+
+# generated data / sample output
+__pycache__/
+*.pyc
+.venv/
+*.stop-livebackup
+nvidia_vram_log.csv
+*_log_*.csv
+
+# machine-specific config (ship a *.example.* instead)
+restore_config.json
+!restore_config.example.json
+
+# editor / OS noise
+.vscode/
+Thumbs.db
+desktop.ini

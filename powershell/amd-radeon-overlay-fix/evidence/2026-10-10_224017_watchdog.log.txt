@@ -1,0 +1,273 @@
+2026-10-10 20:42:07  [INFO]  --- watchdog run ---
+2026-10-10 20:42:15  [WARN]  CONFIRMED: Alt+R is unregistered - the AMD overlay stack is dead. Repairing...
+2026-10-10 20:42:15  [INFO]  skipping service restart (admin=False, NoServiceRestart=True)
+2026-10-10 20:42:21  [INFO]  relaunched AMD Software via scheduled task StartCN
+2026-10-10 20:44:51  [ERROR]  FAILED - overlay did not come back within 150s.
+2026-10-10 20:44:51  [ERROR]  Fallbacks: (1) remove stale RSX package: Get-AppxPackage -AllUsers AdvancedMicroDevicesInc-RSXCM | Remove-AppxPackage -AllUsers
+2026-10-10 20:44:51  [ERROR]             (2) pause Kaspersky protection + self-defence and retry
+2026-10-10 20:44:51  [ERROR]             (3) install Adrenalin 26.8.1 WHQL instead of 26.9.2 Optional
+2026-10-10 20:45:38  [INFO]  --- watchdog run ---
+2026-10-10 20:45:46  [WARN]  CONFIRMED: Alt+R is unregistered - the AMD overlay stack is dead. Repairing...
+2026-10-10 20:45:46  [INFO]  stopped AMD External Events Utility
+2026-10-10 20:45:55  [INFO]  started AMD External Events Utility
+2026-10-10 20:45:59  [INFO]  relaunched AMD Software via LIMITED relay task AMD-Overlay-Relay
+2026-10-10 20:46:24  [OK]  SUCCESS - Alt+R is registered by AMD again. Overlay repaired.
+2026-10-10 20:47:57  [INFO]  --- watchdog run ---
+2026-10-10 20:48:05  [WARN]  CONFIRMED: Alt+R is unregistered - the AMD overlay stack is dead. Repairing...
+2026-10-10 20:48:05  [INFO]  skipping service restart (admin=True, NoServiceRestart=True)
+2026-10-10 20:48:11  [INFO]  relaunched AMD Software via LIMITED relay task AMD-Overlay-Relay
+2026-10-10 20:48:36  [OK]  SUCCESS - Alt+R is registered by AMD again. Overlay repaired.
+2026-10-10 20:49:12  [INFO]  --- watchdog run ---
+2026-10-10 20:49:20  [WARN]  CONFIRMED: Alt+R is unregistered - the AMD overlay stack is dead. Repairing...
+2026-10-10 20:49:20  [INFO]  leaving AMD services untouched (default behaviour)
+2026-10-10 20:49:27  [INFO]  relaunched AMD Software via LIMITED relay task AMD-Overlay-Relay
+2026-10-10 20:49:52  [OK]  SUCCESS - Alt+R is registered by AMD again. Overlay repaired.
+2026-10-10 20:54:46  [INFO]  --- watchdog run ---
+2026-10-10 20:54:46  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 21:08:05  [INFO]  --- watchdog run ---
+2026-10-10 21:08:13  [WARN]  CONFIRMED: Alt+R is unregistered - the AMD overlay stack is dead. Repairing...
+2026-10-10 21:08:13  [INFO]  leaving AMD services untouched (default behaviour)
+2026-10-10 21:08:20  [INFO]  relaunched AMD Software via LIMITED relay task AMD-Overlay-Relay
+2026-10-10 21:08:45  [OK]  SUCCESS - Alt+R is registered by AMD again. Overlay repaired.
+2026-10-10 21:11:06  [INFO]  --- watchdog run ---
+2026-10-10 21:11:06  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 21:14:06  [INFO]  --- watchdog run ---
+2026-10-10 21:14:06  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 21:17:06  [INFO]  --- watchdog run ---
+2026-10-10 21:17:06  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 21:20:06  [INFO]  --- watchdog run ---
+2026-10-10 21:20:06  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 21:23:06  [INFO]  --- watchdog run ---
+2026-10-10 21:23:14  [WARN]  CONFIRMED: Alt+R is unregistered - the AMD overlay stack is dead. Repairing...
+2026-10-10 21:23:14  [INFO]  leaving AMD services untouched (default behaviour)
+2026-10-10 21:23:14  [INFO]  killing amdow (pid 1612)
+2026-10-10 21:23:14  [INFO]  killing AMDRSServ (pid 8264)
+2026-10-10 21:23:14  [INFO]  killing AMDRSSrcExt (pid 14684)
+2026-10-10 21:23:14  [INFO]  killing cncmd (pid 12924)
+2026-10-10 21:23:14  [INFO]  killing CPUMetricsServer (pid 13368)
+2026-10-10 21:23:14  [INFO]  killing RadeonSoftware (pid 2428)
+2026-10-10 21:23:21  [INFO]  relaunched AMD Software via LIMITED relay task AMD-Overlay-Relay
+2026-10-10 21:26:06  [INFO]  --- watchdog run ---
+2026-10-10 21:26:14  [WARN]  CONFIRMED: Alt+R is unregistered - the AMD overlay stack is dead. Repairing...
+2026-10-10 21:26:14  [INFO]  killing hung RSServCmd (pid 400, age 152s)
+2026-10-10 21:26:14  [INFO]  killing hung RSServCmd (pid 12056, age 152s)
+2026-10-10 21:26:14  [INFO]  killing hung RSServCmd (pid 13288, age 137s)
+2026-10-10 21:26:14  [INFO]  killing hung RSServCmd (pid 22436, age 152s)
+2026-10-10 21:26:14  [INFO]  leaving AMD services untouched (default behaviour)
+2026-10-10 21:26:14  [INFO]  killing amdow (pid 1612)
+2026-10-10 21:26:14  [INFO]  killing AMDRSServ (pid 8264)
+2026-10-10 21:26:14  [INFO]  killing cncmd (pid 17452)
+2026-10-10 21:26:14  [INFO]  killing CPUMetricsServer (pid 13368)
+2026-10-10 21:26:14  [INFO]  killing RadeonSoftware (pid 3428)
+2026-10-10 21:26:21  [INFO]  relaunched AMD Software via LIMITED relay task AMD-Overlay-Relay
+2026-10-10 21:26:30  [INFO]  --- watchdog run ---
+2026-10-10 21:26:38  [WARN]  CONFIRMED: Alt+R is unregistered - the AMD overlay stack is dead. Repairing...
+2026-10-10 21:26:38  [INFO]  leaving AMD services untouched (default behaviour)
+2026-10-10 21:26:38  [INFO]  killing amdow (pid 1612)
+2026-10-10 21:26:39  [INFO]  killing AMDRSServ (pid 8264)
+2026-10-10 21:26:39  [INFO]  killing cncmd (pid 22204)
+2026-10-10 21:26:39  [INFO]  killing CPUMetricsServer (pid 13368)
+2026-10-10 21:26:45  [INFO]  relaunched AMD Software via LIMITED relay task AMD-Overlay-Relay
+2026-10-10 21:27:10  [OK]  SUCCESS - Alt+R is registered by AMD again. Overlay repaired.
+2026-10-10 21:27:11  [OK]  SUCCESS - Alt+R is registered by AMD again. Overlay repaired.
+2026-10-10 21:29:06  [INFO]  --- watchdog run ---
+2026-10-10 21:29:06  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 21:32:06  [INFO]  --- watchdog run ---
+2026-10-10 21:32:06  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 21:35:06  [INFO]  --- watchdog run ---
+2026-10-10 21:35:14  [WARN]  CONFIRMED: Alt+R is unregistered - the AMD overlay stack is dead. Repairing...
+2026-10-10 21:35:15  [INFO]  leaving AMD services untouched (default behaviour)
+2026-10-10 21:35:15  [INFO]  killing amdow (pid 5664)
+2026-10-10 21:35:15  [INFO]  killing AMDRSServ (pid 4500)
+2026-10-10 21:35:15  [INFO]  killing AMDRSSrcExt (pid 2312)
+2026-10-10 21:35:15  [INFO]  killing cncmd (pid 14956)
+2026-10-10 21:35:15  [INFO]  killing CPUMetricsServer (pid 7968)
+2026-10-10 21:35:15  [INFO]  killing RadeonSoftware (pid 11756)
+2026-10-10 21:35:15  [INFO]  killing RSServCmd (pid 7952)
+2026-10-10 21:35:15  [INFO]  killing RSServCmd (pid 8352)
+2026-10-10 21:35:15  [INFO]  killing RSServCmd (pid 15176)
+2026-10-10 21:35:15  [INFO]  killing RSServCmd (pid 19184)
+2026-10-10 21:35:21  [INFO]  relaunched AMD Software via LIMITED relay task AMD-Overlay-Relay
+2026-10-10 21:37:51  [ERROR]  FAILED - overlay did not come back within 150s.
+2026-10-10 21:37:51  [ERROR]  Fallbacks: (1) remove stale RSX package: Get-AppxPackage -AllUsers AdvancedMicroDevicesInc-RSXCM | Remove-AppxPackage -AllUsers
+2026-10-10 21:37:51  [ERROR]             (2) pause Kaspersky protection + self-defence and retry
+2026-10-10 21:37:51  [ERROR]             (3) install Adrenalin 26.8.1 WHQL instead of 26.9.2 Optional
+2026-10-10 21:37:55  [INFO]  --- watchdog run ---
+2026-10-10 21:38:03  [WARN]  CONFIRMED: Alt+R is unregistered - the AMD overlay stack is dead. Repairing...
+2026-10-10 21:38:04  [INFO]  killing hung RSServCmd (pid 1908, age 141s)
+2026-10-10 21:38:04  [INFO]  killing hung RSServCmd (pid 4400, age 141s)
+2026-10-10 21:38:04  [INFO]  leaving AMD services untouched (default behaviour)
+2026-10-10 21:38:04  [INFO]  killing amdow (pid 5664)
+2026-10-10 21:38:04  [INFO]  killing AMDRSServ (pid 4500)
+2026-10-10 21:38:04  [INFO]  killing cncmd (pid 7084)
+2026-10-10 21:38:04  [INFO]  killing CPUMetricsServer (pid 7968)
+2026-10-10 21:38:04  [INFO]  killing RadeonSoftware (pid 8996)
+2026-10-10 21:38:06  [INFO]  --- watchdog run ---
+2026-10-10 21:38:10  [INFO]  relaunched AMD Software via LIMITED relay task AMD-Overlay-Relay
+2026-10-10 21:38:14  [WARN]  CONFIRMED: Alt+R is unregistered - the AMD overlay stack is dead. Repairing...
+2026-10-10 21:38:14  [INFO]  leaving AMD services untouched (default behaviour)
+2026-10-10 21:38:14  [INFO]  killing cncmd (pid 9044)
+2026-10-10 21:38:21  [INFO]  relaunched AMD Software via LIMITED relay task AMD-Overlay-Relay
+2026-10-10 21:38:45  [OK]  SUCCESS - Alt+R is registered by AMD again. Overlay repaired.
+2026-10-10 21:38:46  [OK]  SUCCESS - Alt+R is registered by AMD again. Overlay repaired.
+2026-10-10 21:47:06  [INFO]  --- watchdog run ---
+2026-10-10 21:47:14  [WARN]  CONFIRMED: Alt+R is unregistered - the AMD overlay stack is dead. Repairing...
+2026-10-10 21:47:14  [INFO]  killing hung RSServCmd (pid 2644, age 184s)
+2026-10-10 21:47:14  [INFO]  leaving AMD services untouched (default behaviour)
+2026-10-10 21:47:14  [INFO]  killing amdow (pid 2456)
+2026-10-10 21:47:14  [INFO]  killing AMDRSServ (pid 19464)
+2026-10-10 21:47:14  [INFO]  killing AMDRSSrcExt (pid 10544)
+2026-10-10 21:47:14  [INFO]  killing cncmd (pid 19356)
+2026-10-10 21:47:14  [INFO]  killing CPUMetricsServer (pid 8792)
+2026-10-10 21:47:14  [INFO]  killing RadeonSoftware (pid 17352)
+2026-10-10 21:47:21  [INFO]  relaunched AMD Software via LIMITED relay task AMD-Overlay-Relay
+2026-10-10 21:49:51  [ERROR]  FAILED - overlay did not come back within 150s.
+2026-10-10 21:49:51  [ERROR]  Fallbacks: (1) remove stale RSX package: Get-AppxPackage -AllUsers AdvancedMicroDevicesInc-RSXCM | Remove-AppxPackage -AllUsers
+2026-10-10 21:49:51  [ERROR]             (2) pause Kaspersky protection + self-defence and retry
+2026-10-10 21:49:51  [ERROR]             (3) install Adrenalin 26.8.1 WHQL instead of 26.9.2 Optional
+2026-10-10 21:50:06  [INFO]  --- watchdog run ---
+2026-10-10 21:50:14  [WARN]  CONFIRMED: Alt+R is unregistered - the AMD overlay stack is dead. Repairing...
+2026-10-10 21:50:14  [INFO]  killing hung RSServCmd (pid 20044, age 152s)
+2026-10-10 21:50:14  [INFO]  leaving AMD services untouched (default behaviour)
+2026-10-10 21:50:14  [INFO]  killing amdow (pid 2456)
+2026-10-10 21:50:14  [INFO]  killing AMDRSServ (pid 19464)
+2026-10-10 21:50:14  [INFO]  killing cncmd (pid 20688)
+2026-10-10 21:50:14  [INFO]  killing CPUMetricsServer (pid 8792)
+2026-10-10 21:50:14  [INFO]  killing RadeonSoftware (pid 4792)
+2026-10-10 21:50:21  [INFO]  relaunched AMD Software via LIMITED relay task AMD-Overlay-Relay
+2026-10-10 21:50:26  [INFO]  --- watchdog run ---
+2026-10-10 21:50:34  [WARN]  CONFIRMED: Alt+R is unregistered - the AMD overlay stack is dead. Repairing...
+2026-10-10 21:50:34  [INFO]  leaving AMD services untouched (default behaviour)
+2026-10-10 21:50:35  [INFO]  killing amdow (pid 2456)
+2026-10-10 21:50:35  [INFO]  killing AMDRSServ (pid 19464)
+2026-10-10 21:50:35  [INFO]  killing cncmd (pid 21732)
+2026-10-10 21:50:35  [INFO]  killing CPUMetricsServer (pid 8792)
+2026-10-10 21:50:42  [INFO]  relaunched AMD Software via LIMITED relay task AMD-Overlay-Relay
+2026-10-10 21:51:06  [OK]  SUCCESS - Alt+R is registered by AMD again. Overlay repaired.
+2026-10-10 21:51:07  [OK]  SUCCESS - Alt+R is registered by AMD again. Overlay repaired.
+2026-10-10 21:52:26  [INFO]  --- watchdog run ---
+2026-10-10 21:52:26  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 21:55:27  [INFO]  --- watchdog run ---
+2026-10-10 21:55:27  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 21:58:27  [INFO]  --- watchdog run ---
+2026-10-10 21:58:35  [WARN]  CONFIRMED: Alt+R is unregistered - the AMD overlay stack is dead. Repairing...
+2026-10-10 21:58:35  [INFO]  killing hung RSServCmd (pid 7840, age 87s)
+2026-10-10 21:58:35  [INFO]  leaving AMD services untouched (default behaviour)
+2026-10-10 21:58:35  [INFO]  killing amdow (pid 22764)
+2026-10-10 21:58:35  [INFO]  killing AMDRSServ (pid 12208)
+2026-10-10 21:58:35  [INFO]  killing AMDRSSrcExt (pid 16296)
+2026-10-10 21:58:35  [INFO]  killing cncmd (pid 23356)
+2026-10-10 21:58:36  [INFO]  killing CPUMetricsServer (pid 12260)
+2026-10-10 21:58:36  [INFO]  killing RadeonSoftware (pid 5456)
+2026-10-10 21:58:42  [INFO]  relaunched AMD Software via LIMITED relay task AMD-Overlay-Relay
+2026-10-10 21:59:07  [OK]  SUCCESS - Alt+R is registered by AMD again. Overlay repaired.
+2026-10-10 22:00:14  [INFO]  --- watchdog run ---
+2026-10-10 22:00:14  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:01:15  [INFO]  --- watchdog run ---
+2026-10-10 22:01:15  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:02:15  [INFO]  --- watchdog run ---
+2026-10-10 22:02:15  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:03:15  [INFO]  --- watchdog run ---
+2026-10-10 22:03:15  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:04:15  [INFO]  --- watchdog run ---
+2026-10-10 22:04:15  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:05:15  [INFO]  --- watchdog run ---
+2026-10-10 22:05:15  [WARN]  Alt+R free but oldest AMD process is only 2s old - waiting 45s for startup to finish...
+2026-10-10 22:05:24  [INFO]  --- watchdog run ---
+2026-10-10 22:05:32  [WARN]  CONFIRMED: Alt+R is unregistered - the AMD overlay stack is dead. Repairing...
+2026-10-10 22:05:32  [INFO]  leaving AMD services untouched (default behaviour)
+2026-10-10 22:05:32  [INFO]  killing cncmd (pid 10732)
+2026-10-10 22:05:38  [INFO]  relaunched AMD Software via LIMITED relay task AMD-Overlay-Relay
+2026-10-10 22:06:03  [OK]  SUCCESS - Alt+R is registered by AMD again. Overlay repaired.
+2026-10-10 22:06:08  [OK]  second probe says overlay is alive - not acting.
+2026-10-10 22:06:15  [INFO]  --- watchdog run ---
+2026-10-10 22:06:15  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:07:15  [INFO]  --- watchdog run ---
+2026-10-10 22:07:15  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:09:17  [INFO]  --- watchdog run ---
+2026-10-10 22:09:17  [WARN]  Alt+R free but oldest AMD process is only 35s old - waiting 45s for startup to finish...
+2026-10-10 22:10:03  [OK]  overlay came up on its own after the grace period.
+2026-10-10 22:10:13  [INFO]  --- watchdog run ---
+2026-10-10 22:10:13  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:10:15  [INFO]  --- watchdog run ---
+2026-10-10 22:10:15  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:11:16  [INFO]  --- watchdog run ---
+2026-10-10 22:11:16  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:12:15  [INFO]  --- watchdog run ---
+2026-10-10 22:12:15  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:13:15  [INFO]  --- watchdog run ---
+2026-10-10 22:13:15  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:14:15  [INFO]  --- watchdog run ---
+2026-10-10 22:14:15  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:15:15  [INFO]  --- watchdog run ---
+2026-10-10 22:15:15  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:16:15  [INFO]  --- watchdog run ---
+2026-10-10 22:16:15  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:17:15  [INFO]  --- watchdog run ---
+2026-10-10 22:17:15  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:19:16  [INFO]  --- watchdog run ---
+2026-10-10 22:19:16  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:20:13  [INFO]  --- watchdog run ---
+2026-10-10 22:20:13  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:20:15  [INFO]  --- watchdog run ---
+2026-10-10 22:20:15  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:21:16  [INFO]  --- watchdog run ---
+2026-10-10 22:21:16  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:22:16  [INFO]  --- watchdog run ---
+2026-10-10 22:22:16  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:23:16  [INFO]  --- watchdog run ---
+2026-10-10 22:23:16  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:24:17  [INFO]  --- watchdog run ---
+2026-10-10 22:24:17  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:25:16  [INFO]  --- watchdog run ---
+2026-10-10 22:25:16  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:26:16  [INFO]  --- watchdog run ---
+2026-10-10 22:26:16  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:27:16  [INFO]  --- watchdog run ---
+2026-10-10 22:27:16  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:28:15  [INFO]  --- watchdog run ---
+2026-10-10 22:28:23  [WARN]  CONFIRMED: Alt+R is unregistered - the AMD overlay stack is dead. Repairing...
+2026-10-10 22:28:23  [INFO]  leaving AMD services untouched (default behaviour)
+2026-10-10 22:28:24  [INFO]  killing amdow (pid 10144)
+2026-10-10 22:28:24  [INFO]  killing AMDRSServ (pid 18056)
+2026-10-10 22:28:24  [INFO]  killing AMDRSSrcExt (pid 14196)
+2026-10-10 22:28:24  [INFO]  killing cncmd (pid 22540)
+2026-10-10 22:28:24  [INFO]  killing CPUMetricsServer (pid 13704)
+2026-10-10 22:28:24  [INFO]  killing RadeonSoftware (pid 24328)
+2026-10-10 22:28:25  [INFO]  killing RSServCmd (pid 18900)
+2026-10-10 22:28:32  [INFO]  relaunched AMD Software via LIMITED relay task AMD-Overlay-Relay
+2026-10-10 22:28:57  [OK]  SUCCESS - Alt+R is registered by AMD again. Overlay repaired.
+2026-10-10 22:29:15  [INFO]  --- watchdog run ---
+2026-10-10 22:29:15  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:30:15  [INFO]  --- watchdog run ---
+2026-10-10 22:30:15  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:31:15  [INFO]  --- watchdog run ---
+2026-10-10 22:31:15  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:32:15  [INFO]  --- watchdog run ---
+2026-10-10 22:32:15  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:33:16  [INFO]  --- watchdog run ---
+2026-10-10 22:33:16  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:34:16  [INFO]  --- watchdog run ---
+2026-10-10 22:34:16  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:35:16  [INFO]  --- watchdog run ---
+2026-10-10 22:35:16  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:36:15  [INFO]  --- watchdog run ---
+2026-10-10 22:36:24  [WARN]  CONFIRMED: Alt+R is unregistered - the AMD overlay stack is dead. Repairing...
+2026-10-10 22:36:24  [INFO]  leaving AMD services untouched (default behaviour)
+2026-10-10 22:36:24  [INFO]  killing amdow (pid 16952)
+2026-10-10 22:36:24  [INFO]  killing AMDRSServ (pid 2668)
+2026-10-10 22:36:24  [INFO]  killing AMDRSSrcExt (pid 10448)
+2026-10-10 22:36:24  [INFO]  killing cncmd (pid 19588)
+2026-10-10 22:36:24  [INFO]  killing CPUMetricsServer (pid 6256)
+2026-10-10 22:36:25  [INFO]  killing RadeonSoftware (pid 23992)
+2026-10-10 22:36:25  [INFO]  killing RSServCmd (pid 4880)
+2026-10-10 22:36:31  [INFO]  relaunched AMD Software via LIMITED relay task AMD-Overlay-Relay
+2026-10-10 22:36:56  [OK]  SUCCESS - Alt+R is registered by AMD again. Overlay repaired.
+2026-10-10 22:37:15  [INFO]  --- watchdog run ---
+2026-10-10 22:37:16  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:38:16  [INFO]  --- watchdog run ---
+2026-10-10 22:38:16  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:39:16  [INFO]  --- watchdog run ---
+2026-10-10 22:39:16  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
+2026-10-10 22:40:16  [INFO]  --- watchdog run ---
+2026-10-10 22:40:16  [OK]  Alt+R is held by AMD - overlay healthy, nothing to do.
