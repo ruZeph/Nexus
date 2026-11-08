@@ -71,3 +71,23 @@ Following live testing and binary disassembly of `AMDRSServ.exe`, all negative t
 | `FanControl.Service` | **`Automatic (Delayed Start)`** | Eliminates boot race with `AMDADLXServ.exe` (147 OLEAUT32 crashes eliminated). **Custom fan curve for RX 9060 XT hotspot sensor is 100% intact.** |
 | `WinRT PresenceWriter` | **Cleanly De-registered** | Returns `0x80040154` in <0.001ms, eliminating 30s DCOM 10010 hang. **100% survives `sfc /scannow`.** |
 | `AMD-Overlay-Guard` (Task) | **Disabled & Terminated** | Eliminated false-positive watchdog that aggressively killed AMD processes. |
+
+
+---
+
+## 5. Game-Specific Configuration Hardening
+
+### A. Lords of the Fallen (UE5 Native HDR & Borderless Output)
+- **Path:** `C:\Users\Avisek\AppData\Local\LOTF2\Saved\Config\Windows\Engine.ini`
+- **Applied Configuration:**
+  ```ini
+  [SystemSettings]
+  r.HDR.EnableHDROutput=1
+  r.HDR.Display.MaxLuminance=1000
+  r.HDR.Display.MidLuminance=20
+  r.HDR.Display.OutputDevice=3
+  r.HDR.UI.Luminance=500
+  ```
+- **GameUserSettings Alignment:**  
+  `bUseHDRDisplayOutput=True` and `FullscreenMode=1` (Borderless Windowed).
+- **Benefit:** The game launches directly in 10-bit HDR borderless mode from frame 1, avoiding mid-game swapchain format changes that previously caused AMF DirectML/ONNX deadlocks.
