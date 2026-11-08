@@ -109,7 +109,7 @@ Following live testing and binary disassembly of `AMDRSServ.exe`, all negative t
 
 ### Root Cause Analysis
 - **Qt 6.9 QML Cache Corruption:** AMD Adrenalin's user interface is constructed using Qt 6.9 QML (`qrc:/Qml/RSX/Gaming/GameList.qml` and `Graphics.qml`). During prior driver crash iterations, Qt persisted corrupt/stale bytecode (`.qmlc` and compiled shader binaries `_qt_QGfxShaderBuilder_6.9.0`) in `%LOCALAPPDATA%\AMD\Radeonsoftware\cache\`.
-- **Incomplete Experience Database (`GExDb.blb`):** The Game Experience Database under `%LOCALAPPDATA%\AMD\CN\GExDb.blb` had become corrupted and truncated to an incomplete skeleton state containing only two broken profiles with missing feature arrays. When QML evaluated property bindings to feature lists, unhandled TypeError exceptions occurred, causing `CustomStackView` to silently abort rendering and present a completely solid black/grey window in both desktop Adrenalin and the in-game side panel overlay (`Alt+J`).
+- **Incomplete Experience Database (`GExDb.blb`):** The Game Experience Database under `%LOCALAPPDATA%\AMD\CN\GExDb.blb` had become corrupted and truncated to an incomplete skeleton state containing only two broken profiles with missing feature arrays. When QML evaluated property bindings to feature lists, unhandled TypeError exceptions occurred, causing `CustomStackView` to silently abort rendering and present a completely solid black/grey window in both desktop Adrenalin and the in-game side panel overlay (`Alt+Z`).
 
 ### Mitigation & Restoration Procedure
 ```powershell
@@ -131,5 +131,17 @@ Start-Process "C:\Program Files\AMD\CNext\CNext\RadeonSoftware.exe"
 
 ### Verification & Outcome
 - **Full Library Restored:** All 19 detected game library tiles (Elden Ring, Crimson Desert, Black Myth: Wukong, Cyberpunk 2077, Lords of the Fallen, Bloodborne, Red Dead Redemption 2, Onimusha, etc.) populated with game art, play durations, and telemetry.
-- **In-Game Sidebar Restored:** Pressing `Alt+J` inside active game swapchains now fully displays the Gaming section with FSR upscaling overrides, HYPR-RX, Fluid Motion Frames (AFMF 2.1), Anti-Lag, and Radeon Image Sharpening toggles.
+- **In-Game Sidebar Restored:** Pressing `Alt+Z` inside active game swapchains now fully displays the Gaming section with FSR upscaling overrides, HYPR-RX, Fluid Motion Frames (AFMF 2.1), Anti-Lag, and Radeon Image Sharpening toggles.
+
+---
+
+## 8. Summary of Active Working In-Game Hotkeys
+
+| Hotkey | Function | Pipeline State |
+| :--- | :--- | :--- |
+| **`Alt+Z`** | **In-Game Sidebar Overlay** | Native 375px width sidebar, interactive mouse cursor, full game/graphics tuning access. |
+| **`Alt+R`** | **Full-Screen In-Game Overlay** | Full overlay display within borderless swapchain. |
+| **`Ctrl+Shift+O`** | **Performance Metrics Overlay** | Real-time FPS, frametime, VRAM, and GPU utilization overlay. |
+| **`Ctrl+Shift+E`** | **Toggle Video Recording** | Hardware-accelerated AV1 VCN recording direct to `Videos\Radeon ReLive\`. |
+
 
