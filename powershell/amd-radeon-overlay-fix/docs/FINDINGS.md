@@ -227,9 +227,36 @@ running. Treat it as a contributing artefact, not the root cause.
 - **Symptom:** 147 `AMDADLXServ.exe` crashes in `OLEAUT32.dll` at boot.
 - **Remediation:** Set `FanControl.Service` startup type to `Automatic (Delayed Start)` (`sc.exe config FanControl.Service start= delayed-auto`). Allows the AMD display driver and ADLX COM server to initialize fully before FanControl begins sensor polling. Retains full custom fan curve (`"RX 9060 XT"`) mapped to ADLX Hotspot sensor.
 
-### 7.4 Per-Game Overlay Failures (RDR2, LOTF2, Crimson Desert, Onimusha)
-- **Red Dead Redemption 2:** Switched from Exclusive Fullscreen (`<windowed value="2" />`) to Borderless Windowed (`<windowed value="1" />`) in `Documents\Rockstar Games\Red Dead Redemption 2\Settings\system.xml`. Configured `DisableOverlays = false` in `OptiScaler.ini` to prevent OptiScaler from intercepting and discarding overlay presentation.
-- **Lords of the Fallen 2:** Game is protected by Easy Anti-Cheat (`EasyAntiCheat_EOS`). EAC's kernel driver blocks `amddvr64.dll` injection into `LOTF2-Win64-Shipping.exe`, preventing in-game overlay compositing. Can be launched with `-noeac` in Steam Launch Options for offline play.
-- **Crimson Desert:** Ships with NVIDIA Streamline (`sl.interposer.dll`, `ngfx_injection.dll`). Streamline intercepts the DXGI D3D12 swapchain and suppresses external present hooks. Requires Borderless Windowed mode and hook passthrough.
-- **Onimusha:** REFramework (`dinput8.dll`) hooks `IDXGISwapChain::Present` repeatedly, colliding with `amddvr64.dll` and causing `0xc0000005` Access Violation.
-- **Stack Cascading Recovery:** Failed in-game hook injection causes `AMDRSServ.exe` to leak swapchain references and lose desktop hotkey focus. Resolved by restarting `AMD External Events Utility` and invoking `AMD-Overlay-Relay` (`cncmd.exe startwithdelay` at Limited integrity). Tested and verified: `Alt+R` and `Ctrl+Shift+O` consistently return to `HELD (Win32 Error 1409)`.
+### 7.4 In-Game Borderless Recording Fix
+- **Symptom:** In-game hotkeys and recording failed when games ran in borderless or windowed mode.
+- **Root Cause:** By default, AMD DVR had `BorderlessEnabled = 0` and `DesktopRecordingEnabled = 0` in `HKCU\SOFTWARE\AMD\DVR`, causing `AMDRSServ.exe` to reject capture requests whenever a game was not in exclusive fullscreen mode.
+- **Remediation:** Enabled borderless and desktop recording via registry:
+  - `HKCU\SOFTWARE\AMD\DVR\BorderlessEnabled = 1`
+  - `HKCU\SOFTWARE\AMD\DVR\DesktopRecordingEnabled = 1`
+  - Aligned in `HKLM\SOFTWARE\AMD\DVR`.
+- **Verification:** User tested both *Crimson Desert* and *Lords of the Fallen 2*; recording captured complete 60 FPS video files directly to `C:\Users\Avisek\Videos\Radeon ReLive\` (`Crimson Desert_2026.11.08-22.11.mp4` [502 MB] and `Lords of the Fallen_2026.11.08-22.09.mp4` [20 MB]).
+
+### 7.5 Resolution of Overlay Sidebar Freeze & Missing Mouse Cursor
+- **Symptom:** When triggering the overlay (`Alt+R`) over games, the sidebar was frozen, pressing Escape or Alt+R did not dismiss it, and the mouse cursor disappeared.
+- **Forensic Discovery & Call Stack Analysis:**
+  - `AMDRSServ.exe` (PID 11856/2904) owns `AMD:DVR-CapturingWindow` (class `DVREventWindowClass`).
+  - Probing the window with `IsHungAppWindow` returned **`True`**; `SendMessageTimeoutW` returned 0 (timeout).
+  - Inspection of the captured minidump (`amdrsserv_hung.dmp`) revealed Thread 0 (the UI message pump thread) call stack:
+    `ntdll.dll!ZwWaitForSingleObject` <- `KERNELBASE.dll!WaitForSingleObject` <- `amdocl64.dll+0x773fa` <- `amdocl64.dll` <- `OpenCL.dll` <- `AMDRSServ.exe+0x70805` <- `AMDRSServ.exe+0x70215`.
+  - **Mechanism:** On RDNA 4 (gfx1200 / RX 9060 XT), `AMDRSServ.exe` fell back to OpenCL (`amdocl64.dll`) texture interop (`CaptureCopy` / `ColorSpaceConversion.cpp`) for D3D11 frame synchronization on the main thread. The interop wait deadlocked indefinitely.
+  - Because Thread 0 was hung:
+    1. User32 suspended hotkeys (`Alt+R` / `Ctrl+Shift+O` dropped to `FREE`).
+    2. `InGameUiCursorOverlay` never initialized (`ADL2_Desktop_HardwareCursor_Toggle` and `Enable HW Cursor: set bitmap` were never called), leaving the cursor hidden by the game's `ShowCursor(FALSE)`.
+    3. Input routing to `RadeonSoftware.exe` (Qt6 sidebar) was frozen.
+    4. Registry check in `HKCU\SOFTWARE\AMD\CN` revealed `EscapeInputState = 'false'` (explicitly disallowing Esc dismissal) and `SidebarWidth = 1280` (distorting sidebar hit test across two-thirds of the display).
+- **Remediation:**
+  1. Set `HKCU\SOFTWARE\AMD\DVR\EFCEnabledOverride = 1` and `HKLM\SOFTWARE\AMD\DVR\EFCEnabledOverride = 1` (forces hardware Enhanced Frame Conversion on the VCN encoder, completely bypassing the buggy OpenCL texture interop deadlock).
+  2. Set `HKCU\SOFTWARE\AMD\CN\EscapeInputState = 'true'` (allows Escape key and outside click to dismiss the overlay).
+  3. Set `HKCU\SOFTWARE\AMD\CN\SidebarWidth = 375` (resets corrupted 1280px width to native 375px sidebar dimensions).
+  4. Set `HKCU\SOFTWARE\AMD\CN\TriggerShowCNViaHK = 1`, `AllowRSOverlay = 1`, `ShowRSOverlay = 1`, and `RecordPerfUI = 1`.
+  5. Restarted `AMDRSServ.exe` cleanly via `schtasks /run /tn StartDVR`.
+- **Verification:**
+  - `IsHungAppWindow(hwnd_dvr)` returns `False`.
+  - Hotkeys `Alt+R: HELD` and `Ctrl+Shift+O: HELD` remain rock-solid.
+  - Sidebar width normalized to 375px (`0, 0, 728, 1080` scaled).
+  - FanControl ADLX curve and sensors remain 100% active.
