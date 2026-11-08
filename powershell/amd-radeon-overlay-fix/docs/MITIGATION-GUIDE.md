@@ -102,3 +102,34 @@ Following live testing and binary disassembly of `AMDRSServ.exe`, all negative t
 > Dynamic swapchain destruction mid-recording (switching 8-bit SDR $\leftrightarrow$ 10-bit HDR while actively writing to an MP4 container) causes capture pipelines to lose surface handles (`DXGI_ERROR_ACCESS_LOST`).
 > 
 > If HDR is already turned ON in Windows or game settings before you press `Ctrl+Shift+E`, the AMF encoder initializes directly for 10-bit HDR from frame 1 with no mid-stream reconstruction, and recording works seamlessly.
+
+---
+
+## 7. Resolution: Blank / Black Screen in Gaming & Graphics Tabs (QML Cache & Database Rebuild)
+
+### Root Cause Analysis
+- **Qt 6.9 QML Cache Corruption:** AMD Adrenalin's user interface is constructed using Qt 6.9 QML (`qrc:/Qml/RSX/Gaming/GameList.qml` and `Graphics.qml`). During prior driver crash iterations, Qt persisted corrupt/stale bytecode (`.qmlc` and compiled shader binaries `_qt_QGfxShaderBuilder_6.9.0`) in `%LOCALAPPDATA%\AMD\Radeonsoftware\cache\`.
+- **Incomplete Experience Database (`GExDb.blb`):** The Game Experience Database under `%LOCALAPPDATA%\AMD\CN\GExDb.blb` had become corrupted and truncated to an incomplete skeleton state containing only two broken profiles with missing feature arrays. When QML evaluated property bindings to feature lists, unhandled TypeError exceptions occurred, causing `CustomStackView` to silently abort rendering and present a completely solid black/grey window in both desktop Adrenalin and the in-game side panel overlay (`Alt+J`).
+
+### Mitigation & Restoration Procedure
+```powershell
+# 1. Gracefully terminate Adrenalin UI
+Stop-Process -Name "RadeonSoftware" -Force -ErrorAction SilentlyContinue
+
+# 2. Purge stale QML bytecode & shader pipeline cache
+Remove-Item -Path "$env:LOCALAPPDATA\AMD\Radeonsoftware\cache\qmlcache\*" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path "$env:LOCALAPPDATA\AMD\Radeonsoftware\cache\_qt_QGfxShaderBuilder_6.9.0\*" -Recurse -Force -ErrorAction SilentlyContinue
+
+# 3. Rotate corrupted GExDb database
+if (Test-Path "$env:LOCALAPPDATA\AMD\CN\GExDb.blb") {
+    Move-Item -Path "$env:LOCALAPPDATA\AMD\CN\GExDb.blb" -Destination "$env:LOCALAPPDATA\AMD\CN\GExDb.blb.bak" -Force
+}
+
+# 4. Restart Adrenalin UI cleanly
+Start-Process "C:\Program Files\AMD\CNext\CNext\RadeonSoftware.exe"
+```
+
+### Verification & Outcome
+- **Full Library Restored:** All 19 detected game library tiles (Elden Ring, Crimson Desert, Black Myth: Wukong, Cyberpunk 2077, Lords of the Fallen, Bloodborne, Red Dead Redemption 2, Onimusha, etc.) populated with game art, play durations, and telemetry.
+- **In-Game Sidebar Restored:** Pressing `Alt+J` inside active game swapchains now fully displays the Gaming section with FSR upscaling overrides, HYPR-RX, Fluid Motion Frames (AFMF 2.1), Anti-Lag, and Radeon Image Sharpening toggles.
+
