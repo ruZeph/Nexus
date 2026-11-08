@@ -206,3 +206,23 @@ running. Treat it as a contributing artefact, not the root cause.
 | Console flashes per 90 s | ~18 | **0** |
 | Overlay deaths while gaming | ~1 / minute | ~1 / 10 min, auto-repaired in ~1 min |
 | Longest healthy stretch observed | ~30 s | 9 min+ |
+
+
+---
+
+## 7. Session 2 (2026-11-08) — Permanent Root-Cause Eliminations
+
+### 7.1 Elimination of 30-Second DCOM 10010 Timeout
+- **Symptom:** Overlay dropped or froze for 30s during game launch transitions (e.g. AC Black Flag).
+- **Mechanism:** `twinui.pcshell.dll` calls `RoActivateInstance(Windows.Gaming.GameBar.PresenceServer.Internal.PresenceWriter)` on foreground 3D game focus. Because the exe was blocked via IFEO, DCOM stalled for 30 seconds waiting for class registration, logging Event 10010.
+- **Remediation:** Acquired ownership and permanently de-registered `Windows.Gaming.GameBar.PresenceServer.Internal.PresenceWriter` and `Windows.Gaming.GameBar.Internal.PresenceWriterServer` from `HKLM\SOFTWARE\Microsoft\WindowsRuntime\ActivatableClassId` and `WOW6432Node`.
+- **Verification:** `RoActivateInstance` returns `0x80040154 (REGDB_E_CLASSNOTREG)` in <0.001 ms. 0 DCOM events logged. Survives `sfc /scannow` and DISM repairs with 0 keys restored.
+
+### 7.2 The False-Positive Watchdog Trap (`overlay-guard.ps1`)
+- **Symptom:** Overlay was killed ~15-55 seconds after launching exclusive fullscreen 3D games (*AC Black Flag*, *Onimusha*).
+- **Forensic Discovery:** `guard.log` proved that `overlay-guard.ps1` called `Stop-Process -Force` on healthy AMD processes. In exclusive fullscreen mode, Windows User32 suspends desktop hotkeys, allowing the watchdog's `RegisterHotKey(Alt+R)` probe to succeed. The watchdog erroneously deduced the overlay was dead and terminated healthy AMD processes mid-game.
+- **Remediation:** Terminated `overlay-guard.ps1` and disabled `AMD-Overlay-Guard`. Restored standard logon execution via native AMD scheduled tasks `\StartCN` and `\StartDVR`.
+
+### 7.3 FanControl ADLX Startup Race Elimination
+- **Symptom:** 147 `AMDADLXServ.exe` crashes in `OLEAUT32.dll` at boot.
+- **Remediation:** Set `FanControl.Service` startup type to `Automatic (Delayed Start)` (`sc.exe config FanControl.Service start= delayed-auto`). Allows the AMD display driver and ADLX COM server to initialize fully before FanControl begins sensor polling. Retains full custom fan curve (`"RX 9060 XT"`) mapped to ADLX Hotspot sensor.
