@@ -1,11 +1,15 @@
-# AMD Radeon Overlay (Alt+R) — Diagnosis & Remediation
+# AMD Radeon Overlay (Alt+Z / Alt+R) — Diagnosis, Remediation & Baseline Fix
 
 Part of the **[Nexus](../../README.md)** toolkit (`powershell/amd-radeon-overlay-fix/`).
 
-**Machine:** ASRock B850 Pro-A WiFi · Ryzen 5 7600X · AMD Radeon RX 9060 XT (RDNA4)
-**OS:** Windows 11 Pro 25H2 (build 26200.9445)
-**Driver at time of work:** AMD Software Adrenalin **26.9.2 (Optional)**, driver 32.0.32015.2008
-**Date:** 2026-10-10
+> [!IMPORTANT]
+> **Definitive Master Guide:**  
+> See **[docs/CONSOLIDATED-OVERLAY-FIX-GUIDE.md](docs/CONSOLIDATED-OVERLAY-FIX-GUIDE.md)** for the complete, self-contained baseline fix guide including technical root causes, automated PowerShell setup script, registry keys, Qt QML cache resolution, UE5 HDR borderless configuration, and in-game hotkey reference (`Alt+Z`, `Alt+R`, `Ctrl+Shift+O`, `Ctrl+Shift+E`).
+
+**Machine:** ASRock B850 Pro-A WiFi · Ryzen 5 7600X · AMD Radeon RX 9060 XT (RDNA4)  
+**OS:** Windows 11 Pro 25H2 (build 26200.9711)  
+**Driver:** AMD Software Adrenalin **26.20.15.12**, driver 32.0.32015.12012  
+**Status:** **100% Resolved & Verified Baseline** (Overlay, Recording, Performance Metrics, and Gaming/Graphics UI pages fully operational across all titles).
 
 ---
 

@@ -1,0 +1,614 @@
+{
+  "HKCU": {
+    "PerformanceMonitorOpacityWA": {
+      "val": 0,
+      "type": 4
+    },
+    "CaptureFileOutput": {
+      "val": "C:\\Users\\Avisek\\Videos\\Radeon ReLive",
+      "type": 1
+    },
+    "DvrEnabled": {
+      "val": 1,
+      "type": 4
+    },
+    "FrameGenSearchMode": {
+      "val": 0,
+      "type": 4
+    },
+    "FrameGenPerfMode": {
+      "val": 0,
+      "type": 4
+    },
+    "FrameGenFallbackMode": {
+      "val": 0,
+      "type": 4
+    },
+    "AVCCaps": {
+      "val": "768,1,4096,4096,1000000000,6125260,1;",
+      "type": 1
+    },
+    "HEVCCaps": {
+      "val": "768,1,8192,4352,1000000000,6099792,0;",
+      "type": 1
+    },
+    "AV1CCaps": {
+      "val": "768,1,8192,4352,1000000000,8256648,0;",
+      "type": 1
+    },
+    "AvcEfcSupport": {
+      "val": "1;",
+      "type": 1
+    },
+    "HevcEfcSupport": {
+      "val": "1;",
+      "type": 1
+    },
+    "Av1EfcSupport": {
+      "val": "1;",
+      "type": 1
+    },
+    "FileEncoderType": {
+      "val": "AV1",
+      "type": 1
+    },
+    "CapsWrittenToRegOnce": {
+      "val": 1,
+      "type": 4
+    },
+    "PrevInstantReplayEnable": {
+      "val": 0,
+      "type": 4
+    },
+    "PrevInGameReplayEnabled": {
+      "val": 0,
+      "type": 4
+    },
+    "PrevInstantGifEnabled": {
+      "val": 0,
+      "type": 4
+    },
+    "DvrDesktops": {
+      "val": "\\\\.\\DISPLAY1",
+      "type": 1
+    },
+    "CameraName": {
+      "val": "Lenovo FHD Webcam",
+      "type": 1
+    },
+    "ActiveSceneId": {
+      "val": "0",
+      "type": 1
+    },
+    "Procs": {
+      "val": "00",
+      "type": 3
+    },
+    "CameraEnabled": {
+      "val": 0,
+      "type": 4
+    },
+    "WizardNeedRestore": {
+      "val": "false",
+      "type": 1
+    },
+    "WizardInterimSettings": {
+      "val": "",
+      "type": 1
+    },
+    "ReliveWizardShown": {
+      "val": 1,
+      "type": 4
+    },
+    "MicPassthroughEnabled": {
+      "val": 1,
+      "type": 4
+    },
+    "BorderlessEnabled": {
+      "val": 0,
+      "type": 4
+    },
+    "ScreenRotationEnabled": {
+      "val": 0,
+      "type": 4
+    },
+    "MicPushToTalkHotkey": {
+      "val": "MOUSE_5",
+      "type": 1
+    }
+  },
+  "HKLM": {
+    "ToggleRsHotkey": {
+      "val": "Alt,R",
+      "type": 1
+    },
+    "ToggleRsPerfUiHotkey": {
+      "val": "Ctrl+Shift,O",
+      "type": 1
+    },
+    "ToggleRsPerfRecordingHotkey": {
+      "val": "Ctrl+Shift,L",
+      "type": 1
+    },
+    "ToggleRsPerfOverlayProfileHotkey": {
+      "val": "Ctrl+Shift,X",
+      "type": 1
+    },
+    "Rotation00Hotkey": {
+      "val": "Ctrl+Alt,VK_UP",
+      "type": 1
+    },
+    "Rotation90Hotkey": {
+      "val": "Ctrl+Alt,VK_LEFT",
+      "type": 1
+    },
+    "Rotation180Hotkey": {
+      "val": "Ctrl+Alt,VK_DOWN",
+      "type": 1
+    },
+    "Rotation270Hotkey": {
+      "val": "Ctrl+Alt,VK_RIGHT",
+      "type": 1
+    },
+    "ToggleDvrToolbarHotkey": {
+      "val": "Alt,Z",
+      "type": 1
+    },
+    "ToggleDvrRecordingHotkey": {
+      "val": "Ctrl+Shift,E",
+      "type": 1
+    },
+    "ToggleStreamingHotkey": {
+      "val": "Ctrl+Shift,G",
+      "type": 1
+    },
+    "ToggleCameraHotkey": {
+      "val": "Ctrl+Shift,C",
+      "type": 1
+    },
+    "ToggleMicrophoneHotkey": {
+      "val": "Ctrl+Shift,M",
+      "type": 1
+    },
+    "TakeScreenshotHotkey": {
+      "val": "Ctrl+Shift,I",
+      "type": 1
+    },
+    "SaveInstantReplayHotkey": {
+      "val": "Ctrl+Shift,S",
+      "type": 1
+    },
+    "SaveInstantGifHotkey": {
+      "val": "Ctrl+Shift,J",
+      "type": 1
+    },
+    "SaveInGameReplayHotkey": {
+      "val": "Ctrl+Shift,U",
+      "type": 1
+    },
+    "ToggleUpscaling": {
+      "val": "Alt,U",
+      "type": 1
+    },
+    "ToggleFrameGen": {
+      "val": "Alt+Shift,G",
+      "type": 1
+    },
+    "InstantReplayEnabled": {
+      "val": 0,
+      "type": 4
+    },
+    "InstantReplayDuration": {
+      "val": 60,
+      "type": 4
+    },
+    "InstantGifEnabled": {
+      "val": 0,
+      "type": 4
+    },
+    "InstantGifDuration": {
+      "val": 15,
+      "type": 4
+    },
+    "InstantGifQuality": {
+      "val": "Medium",
+      "type": 1
+    },
+    "InGameReplayEnabled": {
+      "val": 0,
+      "type": 4
+    },
+    "InGameReplayDuration": {
+      "val": 15,
+      "type": 4
+    },
+    "InGameReplayPosition": {
+      "val": "Centered",
+      "type": 1
+    },
+    "InGameReplaySize": {
+      "val": "Medium",
+      "type": 1
+    },
+    "InGameReplayRect": {
+      "val": "1280,720",
+      "type": 1
+    },
+    "InGameReplayOffset": {
+      "val": "40,40",
+      "type": 1
+    },
+    "DesktopRecordingEnabled": {
+      "val": 0,
+      "type": 4
+    },
+    "DvrEnabled": {
+      "val": 0,
+      "type": 4
+    },
+    "FileLowFrameRate": {
+      "val": 60,
+      "type": 4
+    },
+    "FileMediumFrameRate": {
+      "val": 60,
+      "type": 4
+    },
+    "FileHighFrameRate": {
+      "val": 60,
+      "type": 4
+    },
+    "WebLowFrameRate": {
+      "val": 30,
+      "type": 4
+    },
+    "WebMediumFrameRate": {
+      "val": 60,
+      "type": 4
+    },
+    "WebHighFrameRate": {
+      "val": 60,
+      "type": 4
+    },
+    "WebSuperHighFrameRate": {
+      "val": 60,
+      "type": 4
+    },
+    "FileLowResolution": {
+      "val": "720",
+      "type": 1
+    },
+    "FileMediumResolution": {
+      "val": "InGame",
+      "type": 1
+    },
+    "FileHighResolution": {
+      "val": "InGame",
+      "type": 1
+    },
+    "WebLowResolution": {
+      "val": "720",
+      "type": 1
+    },
+    "WebMediumResolution": {
+      "val": "720",
+      "type": 1
+    },
+    "WebHighResolution": {
+      "val": "720",
+      "type": 1
+    },
+    "WebSuperHighResolution": {
+      "val": "1080",
+      "type": 1
+    },
+    "FileLowBitrate": {
+      "val": 5000,
+      "type": 4
+    },
+    "FileMediumBitrate": {
+      "val": 10000,
+      "type": 4
+    },
+    "FileHighBitrate": {
+      "val": 30000,
+      "type": 4
+    },
+    "WebLowBitrate": {
+      "val": 1500,
+      "type": 4
+    },
+    "WebMediumBitrate": {
+      "val": 2500,
+      "type": 4
+    },
+    "WebHighBitrate": {
+      "val": 3500,
+      "type": 4
+    },
+    "WebSuperHighBitrate": {
+      "val": 6000,
+      "type": 4
+    },
+    "UserProfileFile": {
+      "val": "High",
+      "type": 1
+    },
+    "UserProfileWeb": {
+      "val": "High",
+      "type": 1
+    },
+    "CameraEnabled": {
+      "val": 0,
+      "type": 4
+    },
+    "CameraName": {
+      "val": "",
+      "type": 1
+    },
+    "CameraSize": {
+      "val": 3,
+      "type": 4
+    },
+    "CameraRect": {
+      "val": "320,240",
+      "type": 1
+    },
+    "CameraCustomRect": {
+      "val": "320,240",
+      "type": 1
+    },
+    "CameraAnchor": {
+      "val": 3,
+      "type": 4
+    },
+    "CameraShownOnScreen": {
+      "val": 1,
+      "type": 4
+    },
+    "CameraOffset": {
+      "val": "40,40",
+      "type": 1
+    },
+    "CameraCustomOffset": {
+      "val": "40,40",
+      "type": 1
+    },
+    "CameraOpacity": {
+      "val": 100,
+      "type": 4
+    },
+    "CustomOverlayEnabled": {
+      "val": 0,
+      "type": 4
+    },
+    "CustomOverlayPath": {
+      "val": "",
+      "type": 1
+    },
+    "CaptureFileOutput": {
+      "val": "",
+      "type": 1
+    },
+    "IndicatorPosition": {
+      "val": 0,
+      "type": 4
+    },
+    "RigInfoOverlayEnabled": {
+      "val": 0,
+      "type": 4
+    },
+    "RigInfoOverlayAnchor": {
+      "val": 3,
+      "type": 4
+    },
+    "RigInfoOverlayDuration": {
+      "val": 8000,
+      "type": 4
+    },
+    "AudioOutputCaptureEnabled": {
+      "val": 1,
+      "type": 4
+    },
+    "AudioInputCaptureEnabled": {
+      "val": 0,
+      "type": 4
+    },
+    "FileAudioSampleRate": {
+      "val": 48000,
+      "type": 4
+    },
+    "StreamAudioSampleRate": {
+      "val": 44100,
+      "type": 4
+    },
+    "FileAudioBitRate": {
+      "val": 192,
+      "type": 4
+    },
+    "StreamAudioBitRate": {
+      "val": 128,
+      "type": 4
+    },
+    "StreamingService": {
+      "val": "none",
+      "type": 1
+    },
+    "YoutubeServer": {
+      "val": "",
+      "type": 1
+    },
+    "YoutubeKey": {
+      "val": "",
+      "type": 1
+    },
+    "TwitchServer": {
+      "val": "",
+      "type": 1
+    },
+    "TwitchKey": {
+      "val": "",
+      "type": 1
+    },
+    "CustomServer": {
+      "val": "",
+      "type": 1
+    },
+    "CustomKey": {
+      "val": "",
+      "type": 1
+    },
+    "StreamingArchiveEnabled": {
+      "val": 0,
+      "type": 4
+    },
+    "EncodeProfile": {
+      "val": "main",
+      "type": 1
+    },
+    "AudioBoostLevel": {
+      "val": 100,
+      "type": 4
+    },
+    "MicPushToTalkEnabled": {
+      "val": 0,
+      "type": 4
+    },
+    "MicVolumeLevel": {
+      "val": 50,
+      "type": 4
+    },
+    "MicVolumeMax": {
+      "val": 100,
+      "type": 4
+    },
+    "MicPushToTalkHotkey": {
+      "val": "MOUSE_MIDDLE",
+      "type": 1
+    },
+    "AudioChannelType": {
+      "val": 0,
+      "type": 4
+    },
+    "ShowMediaPlayer": {
+      "val": 1,
+      "type": 4
+    },
+    "WebAdaptiveBitrateMaxFB": {
+      "val": 4000,
+      "type": 4
+    },
+    "WebAdaptiveBitrateMaxRS": {
+      "val": 4000,
+      "type": 4
+    },
+    "WebAdaptiveBitrateMaxST": {
+      "val": 4000,
+      "type": 4
+    },
+    "WebAdaptiveBitrateMaxTW": {
+      "val": 6000,
+      "type": 4
+    },
+    "WebAdaptiveBitrateMaxYT": {
+      "val": 9000,
+      "type": 4
+    },
+    "RecordPerfUI": {
+      "val": 0,
+      "type": 4
+    },
+    "FileLowApuResolution": {
+      "val": "720",
+      "type": 1
+    },
+    "FileMediumApuResolution": {
+      "val": "720",
+      "type": 1
+    },
+    "FileHighApuResolution": {
+      "val": "720",
+      "type": 1
+    },
+    "FileLowApuFrameRate": {
+      "val": 30,
+      "type": 4
+    },
+    "FileMediumApuFrameRate": {
+      "val": 30,
+      "type": 4
+    },
+    "FileHighApuFrameRate": {
+      "val": 60,
+      "type": 4
+    },
+    "FileLowApuBitrate": {
+      "val": 5000,
+      "type": 4
+    },
+    "FileMediumApuBitrate": {
+      "val": 6000,
+      "type": 4
+    },
+    "FileHighApuBitrate": {
+      "val": 7500,
+      "type": 4
+    },
+    "WebLowApuResolution": {
+      "val": "720",
+      "type": 1
+    },
+    "WebMediumApuResolution": {
+      "val": "720",
+      "type": 1
+    },
+    "WebHighApuResolution": {
+      "val": "720",
+      "type": 1
+    },
+    "WebSuperHighApuResolution": {
+      "val": "1080",
+      "type": 1
+    },
+    "WebLowApuFrameRate": {
+      "val": 30,
+      "type": 4
+    },
+    "WebMediumApuFrameRate": {
+      "val": 30,
+      "type": 4
+    },
+    "WebHighApuFrameRate": {
+      "val": 60,
+      "type": 4
+    },
+    "WebSuperHighApuFrameRate": {
+      "val": 60,
+      "type": 4
+    },
+    "WebLowApuBitrate": {
+      "val": 5000,
+      "type": 4
+    },
+    "WebMediumApuBitrate": {
+      "val": 6000,
+      "type": 4
+    },
+    "WebHighApuBitrate": {
+      "val": 7500,
+      "type": 4
+    },
+    "WebSuperHighApuBitrate": {
+      "val": 10000,
+      "type": 4
+    },
+    "UserProfileApuFile": {
+      "val": "Low",
+      "type": 1
+    },
+    "UserProfileApuWeb": {
+      "val": "Low",
+      "type": 1
+    }
+  }
+}
