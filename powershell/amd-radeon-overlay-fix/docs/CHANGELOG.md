@@ -202,3 +202,65 @@ Restore point.
 | 9 | Real reboot validation | OK - logon succeeded; overlay worked on desktop + in Khazan |
 | 10 | Eliminate Game Bar | OK - verified by DCOM "Unable to start ...PresenceWriter" errors; death rate ~1/min -> ~1/10min |
 | 11 | Console-flash elimination | OK - **0** console-capable process creations in 90 s |
+
+---
+
+## K. 2026-11-08 — RECURRENCE and fixes
+
+The overlay broke again, and the guard had silently stopped working. Four separate causes.
+
+### K1. GUARD BUG (critical — our fault)
+`overlay-guard.ps1` had a diagnostic line calling `[OGProbe]::GetForegroundWindow()` — a method
+that did not exist on the class. It threw, the outer `try/catch` swallowed it, and
+**`Invoke-Repair` was never reached.**
+
+Result: between 2026-10-25 and 2026-10-28 the guard logged **305 `OVERLAY DEAD` events and
+performed ZERO repairs** (0 SUCCESS, 0 FAILED lines). The fault was never exercised during the
+original install — only the healthy path was tested.
+
+Fix:
+- added `GetForegroundWindow` / `GetWindowThreadProcessId` to the `OGProbe` class
+- replaced the broken diagnostic with a `Get-ForegroundApp` helper that cannot throw
+- wrapped the diagnostic block in its own `try/catch`, so a logging failure can never block a
+  repair again
+
+Verified: deliberately broke the overlay -> guard repaired in **58 s**; a second death was then
+repaired in **32 s**. `### foreground app:` now logs correctly.
+
+### K2. REPO REORGANISATION broke the task path
+The Nexus repo was restructured on 2026-11-03 to lowercase/kebab-case:
+
+```
+OLD  C:\Custom User\Nexus\Powershell Scripts\AMD Radeon Overlay Fix
+NEW  C:\Custom User\Nexus\powershell\amd-radeon-overlay-fix
+```
+
+The `AMD-Overlay-Guard` task was missing and the guard was not running.
+Fix: `scripts/install/register-guard.ps1` is now **self-locating** (derives the path from
+`$PSScriptRoot`), re-registered -> task `Ready`, guard running.
+
+### K3. Windows update undid parts of the Game Bar elimination
+Windows UBR moved 9445 -> 9711. It restored:
+- `GameBarPresenceWriter.exe` + `.proxy.dll` in System32 **and** SysWOW64 (live copies beside the
+  `.disabled` ones)
+- `GameInputRedistService` back to Automatic / Running
+
+Re-applied: all four binaries renamed to `.disabled` again; `GameInputRedistService` stopped and
+set to Disabled. Active Game Bar binaries: **0**.
+
+> Expect this after every Windows cumulative update. Re-run
+> `scripts/maintenance/neuter-gamebar-all.ps1` (or just repeat these two steps).
+
+### K4. AMD driver changed
+```
+was : 26.9.2    driver 32.0.32015.2008
+now : 26.10.2   driver 32.0.32015.12012   (build 261023a1, 2026-10-23)
+RSXBrowserUnavailable = true            (unchanged)
+```
+Overlay deaths first appear in the guard log on **2026-10-25** — i.e. after this driver landed.
+The AMD-side defect therefore persists across driver versions; the **26.8.1 WHQL** clean install
+recommended in README section 8 has still not been tried.
+
+### K5. Deliberately NOT changed
+`AchievementsAutoStart` / `Achievements.exe` — confirmed **not** an issue; left alone as requested.
+(Note: it does still spawn `fastlist.exe` + `conhost` every 12 s, which can flash a console.)

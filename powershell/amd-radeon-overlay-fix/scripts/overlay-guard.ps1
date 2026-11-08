@@ -71,6 +71,10 @@ public class OGProbe {
     public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
     [DllImport("user32.dll", SetLastError=true)]
     public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 }
 "@
 Add-Type -TypeDefinition $probeSrc -ErrorAction SilentlyContinue
@@ -94,6 +98,21 @@ function Test-OverlayAlive {
 function Get-AmdProcesses {
     Get-Process | Where-Object {
         $_.Name -match '^(RadeonSoftware|amdow|cncmd|AMDRSServ|AMDRSSrcExt|RSServCmd|CPUMetricsServer)$'
+    }
+}
+
+function Get-ForegroundApp {
+    # Best-effort diagnostic only. MUST never throw.
+    try {
+        $h = [OGProbe]::GetForegroundWindow()
+        if ($h -eq [IntPtr]::Zero) { return '(none)' }
+        $fpid = 0
+        [void][OGProbe]::GetWindowThreadProcessId($h, [ref]$fpid)
+        $p = Get-Process -Id $fpid -ErrorAction SilentlyContinue
+        if ($p) { return ($p.ProcessName + ' (pid ' + $fpid + ')') }
+        return ('pid ' + $fpid)
+    } catch {
+        return '(unavailable)'
     }
 }
 
@@ -211,13 +230,21 @@ while ($true) {
             $lastProbe = Get-Date
             $alive = Test-OverlayAlive
             if (-not $alive) {
-                Write-Log '----------------------------------------------------------------'
-                Write-Log ("### OVERLAY DEAD at " + (Get-Date -Format 'HH:mm:ss.fff'))
-                $fgp = (Get-Process -Id ([OGProbe]::GetForegroundWindow()) -ErrorAction SilentlyContinue).ProcessName
-                Write-Log ("### foreground app: " + (Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1).ProcessName)
-                Write-Log '### last 30 churn events:'
-                $churnBuf | Select-Object -Last 30 | ForEach-Object { Write-Log ("    " + $_) 'CHURN' }
+                # --- diagnostics: own try/catch so a logging failure can NEVER
+                #     prevent the repair. (A bad line here once meant 305 deaths
+                #     were detected and ZERO were repaired.) ---
+                try {
+                    Write-Log '----------------------------------------------------------------'
+                    Write-Log ("### OVERLAY DEAD at " + (Get-Date -Format 'HH:mm:ss.fff'))
+                    Write-Log ("### foreground app: " + (Get-ForegroundApp))
+                    Write-Log '### last 30 churn events:'
+                    $churnBuf | Select-Object -Last 30 | ForEach-Object { Write-Log ("    " + $_) 'CHURN' }
+                } catch {
+                    Write-Log ("diagnostics failed (ignored, repair continues): " + $_.Exception.Message) 'WARN'
+                }
+
                 Invoke-Repair | Out-Null
+
                 Write-Log '----------------------------------------------------------------'
                 $lastProbe = Get-Date
             }
