@@ -226,3 +226,10 @@ running. Treat it as a contributing artefact, not the root cause.
 ### 7.3 FanControl ADLX Startup Race Elimination
 - **Symptom:** 147 `AMDADLXServ.exe` crashes in `OLEAUT32.dll` at boot.
 - **Remediation:** Set `FanControl.Service` startup type to `Automatic (Delayed Start)` (`sc.exe config FanControl.Service start= delayed-auto`). Allows the AMD display driver and ADLX COM server to initialize fully before FanControl begins sensor polling. Retains full custom fan curve (`"RX 9060 XT"`) mapped to ADLX Hotspot sensor.
+
+### 7.4 Per-Game Overlay Failures (RDR2, LOTF2, Crimson Desert, Onimusha)
+- **Red Dead Redemption 2:** Switched from Exclusive Fullscreen (`<windowed value="2" />`) to Borderless Windowed (`<windowed value="1" />`) in `Documents\Rockstar Games\Red Dead Redemption 2\Settings\system.xml`. Configured `DisableOverlays = false` in `OptiScaler.ini` to prevent OptiScaler from intercepting and discarding overlay presentation.
+- **Lords of the Fallen 2:** Game is protected by Easy Anti-Cheat (`EasyAntiCheat_EOS`). EAC's kernel driver blocks `amddvr64.dll` injection into `LOTF2-Win64-Shipping.exe`, preventing in-game overlay compositing. Can be launched with `-noeac` in Steam Launch Options for offline play.
+- **Crimson Desert:** Ships with NVIDIA Streamline (`sl.interposer.dll`, `ngfx_injection.dll`). Streamline intercepts the DXGI D3D12 swapchain and suppresses external present hooks. Requires Borderless Windowed mode and hook passthrough.
+- **Onimusha:** REFramework (`dinput8.dll`) hooks `IDXGISwapChain::Present` repeatedly, colliding with `amddvr64.dll` and causing `0xc0000005` Access Violation.
+- **Stack Cascading Recovery:** Failed in-game hook injection causes `AMDRSServ.exe` to leak swapchain references and lose desktop hotkey focus. Resolved by restarting `AMD External Events Utility` and invoking `AMD-Overlay-Relay` (`cncmd.exe startwithdelay` at Limited integrity). Tested and verified: `Alt+R` and `Ctrl+Shift+O` consistently return to `HELD (Win32 Error 1409)`.
