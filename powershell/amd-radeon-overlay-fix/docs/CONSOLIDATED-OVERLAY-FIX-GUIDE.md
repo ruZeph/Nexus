@@ -76,7 +76,103 @@ Binary disassembly of `AMDRSServ.exe` proved that community "disable overlay" tw
 
 ---
 
-## 3. Automated Master Fix Script
+## 3. Dedicated Registry Tweaks Specification
+
+### A. Strictly Positive Registry Keys (Active Baseline)
+
+#### 1. User DVR & Capture Pipeline (`HKCU\SOFTWARE\AMD\DVR`)
+| Value Name | Type | Value | Engineering Purpose |
+| :--- | :--- | :--- | :--- |
+| `BorderlessEnabled` | `REG_DWORD` | **`1`** | Permits video recording and overlay compositing when games run in borderless windowed mode. |
+| `DesktopRecordingEnabled` | `REG_DWORD` | **`0`** | **Critical:** Set to `0` to eliminate Thread 0 Desktop Duplication deadlock during game initialization. Borderless recording works natively via `BorderlessEnabled = 1`. |
+| `DDAccepted` | `REG_DWORD` | **`1`** | Pre-authorizes Desktop Duplication API permissions silently without prompting. |
+| `EFCEnabledOverride` | `REG_DWORD` | **`1`** | **Critical:** Forces hardware VCN Enhanced Frame Conversion in silicon, completely bypassing the OpenCL (`amdocl64.dll`) texture interop deadlock. |
+| `AllowRSOverlay` | `REG_DWORD` | **`1`** | Explicitly enables in-game overlay initialization. |
+| `ShowRSOverlay` | `REG_DWORD` | **`1`** | Signals overlay presentation pipeline to activate and composite over game swapchains. |
+| `RecordPerfUI` | `REG_DWORD` | **`1`** | Keeps overlay UI alive during performance metrics monitoring. |
+| `DvrEnabled` | `REG_DWORD` | **`1`** | Master activation flag for Radeon ReLive DVR recording subsystem. |
+| `AvcEfcSupport` | `REG_DWORD` | **`1`** | Hardware EFC support for AVC (H.264) codec. |
+| `HevcEfcSupport` | `REG_DWORD` | **`1`** | Hardware EFC support for HEVC (H.265) codec. |
+| `Av1EfcSupport` | `REG_DWORD` | **`1`** | Hardware EFC support for AV1 codec. |
+| `FileEncoderType` | `REG_SZ` | **`"AV1"`** | Hardware encoder container format set to native RDNA4 AV1. |
+
+#### 2. System-Wide DVR Pipeline (`HKLM\SOFTWARE\AMD\DVR`)
+| Value Name | Type | Value | Engineering Purpose |
+| :--- | :--- | :--- | :--- |
+| `BorderlessEnabled` | `REG_DWORD` | **`1`** | System-wide borderless capture enablement across all desktop sessions. |
+| `DesktopRecordingEnabled` | `REG_DWORD` | **`0`** | System-wide prevention of background desktop pipeline deadlock on game startup. |
+| `DDAccepted` | `REG_DWORD` | **`1`** | System-wide pre-authorization for capture APIs. |
+| `EFCEnabledOverride` | `REG_DWORD` | **`1`** | System-wide hardware EFC frame conversion override. |
+| `AllowRSOverlay` | `REG_DWORD` | **`1`** | System-wide overlay authorization. |
+| `ShowRSOverlay` | `REG_DWORD` | **`1`** | System-wide overlay presentation flag. |
+| `RecordPerfUI` | `REG_DWORD` | **`1`** | System-wide UI recording flag. |
+| `DvrEnabled` | `REG_DWORD` | **`1`** | Master system-wide ReLive DVR subsystem activation flag. |
+
+#### 3. User Interface & Input Navigation (`HKCU\SOFTWARE\AMD\CN`)
+| Value Name | Type | Value | Engineering Purpose |
+| :--- | :--- | :--- | :--- |
+| `EscapeInputState` | `REG_SZ` | **`"true"`** | Restores Escape key (`VK_ESCAPE`) & outside-click overlay dismissal handling. |
+| `SidebarWidth` | `REG_DWORD` | **`375`** | Resets distorted 1280px hit-test width back to native 375px sidebar dimensions. |
+| `TriggerShowCNViaHK` | `REG_DWORD` | **`1`** | Enables hotkey-triggered visibility toggling of CNext UI. |
+
+---
+
+### B. Destructive Negative Tweaks (Completely Deleted & Reverted)
+Following binary disassembly of `AMDRSServ.exe`, all community `Disable*` registry keys were found to actively destroy overlay compositing and were permanently deleted:
+
+| Value Name | Hives Deleted From | Binary Disassembly Forensic Finding |
+| :--- | :--- | :--- |
+| `DisableAmdCapture` | `HKCU` & `HKLM` | Disassembly at RVA `0x886d4` (`0x87ad4`): `cmp [rbp-18h], 1; je 0x89fa0` unconditionally skipped 5,302 bytes of AMF capture setup. |
+| `DisableSharedTextureCopy` | `HKCU` & `HKLM` | Disassembly at RVA `0xd02a5` (`0xcf6a5`): cleared `bUseSharedTextureCopy` to 0, completely breaking DirectX 12 shared NT handle compositing. |
+| `DXSyncDisable` | `HKCU` & `HKLM` | Broke DirectX synchronization fence alignment between game and overlay swapchains. |
+
+---
+
+### C. Manual `.reg` Registry Import File
+For manual registry import without PowerShell, save as `AMD_Overlay_Fix.reg` and double-click to merge:
+
+```reg
+Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\SOFTWARE\AMD\DVR]
+"DvrEnabled"=dword:00000001
+"AllowRSOverlay"=dword:00000001
+"ShowRSOverlay"=dword:00000001
+"RecordPerfUI"=dword:00000001
+"BorderlessEnabled"=dword:00000001
+"DesktopRecordingEnabled"=dword:00000000
+"DDAccepted"=dword:00000001
+"EFCEnabledOverride"=dword:00000001
+"AvcEfcSupport"=dword:00000001
+"HevcEfcSupport"=dword:00000001
+"Av1EfcSupport"=dword:00000001
+"FileEncoderType"="AV1"
+"DisableAmdCapture"=-
+"DisableSharedTextureCopy"=-
+"DXSyncDisable"=-
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\AMD\DVR]
+"DvrEnabled"=dword:00000001
+"AllowRSOverlay"=dword:00000001
+"ShowRSOverlay"=dword:00000001
+"RecordPerfUI"=dword:00000001
+"BorderlessEnabled"=dword:00000001
+"DesktopRecordingEnabled"=dword:00000000
+"DDAccepted"=dword:00000001
+"EFCEnabledOverride"=dword:00000001
+"DisableAmdCapture"=-
+"DisableSharedTextureCopy"=-
+"DXSyncDisable"=-
+
+[HKEY_CURRENT_USER\SOFTWARE\AMD\CN]
+"EscapeInputState"="true"
+"SidebarWidth"=dword:00000177
+"TriggerShowCNViaHK"=dword:00000001
+```
+
+---
+
+## 4. Automated Master Fix Script
 
 Save and run the following PowerShell script with Administrator privileges to apply the complete baseline configuration:
 
@@ -195,7 +291,7 @@ Write-Host "`nSUCCESS: Baseline profile applied and Adrenalin relaunched." -Fore
 
 ---
 
-## 4. Game-Specific Configuration Hardening
+## 5. Game-Specific Configuration Hardening
 
 ### Lords of the Fallen (Unreal Engine 5 Native HDR & Borderless Output)
 - **Configuration File:**  
@@ -220,7 +316,7 @@ Write-Host "`nSUCCESS: Baseline profile applied and Adrenalin relaunched." -Fore
 
 ---
 
-## 5. Active In-Game Hotkeys Reference
+## 6. Active In-Game Hotkeys Reference
 
 | Shortcut | Description | Behavior |
 | :--- | :--- | :--- |
@@ -231,7 +327,7 @@ Write-Host "`nSUCCESS: Baseline profile applied and Adrenalin relaunched." -Fore
 
 ---
 
-## 6. Critical Operational Protocols
+## 7. Critical Operational Protocols
 
 > [!IMPORTANT]
 > **Rule 1: Set HDR and Window Mode BEFORE Starting Video Recording**  
@@ -248,7 +344,7 @@ Write-Host "`nSUCCESS: Baseline profile applied and Adrenalin relaunched." -Fore
 
 ---
 
-## 7. Verification & Health Check Procedure
+## 8. Verification & Health Check Procedure
 
 Run this one-liner in PowerShell anytime to verify that the entire AMD stack is healthy:
 
