@@ -82,6 +82,7 @@ Following live testing and binary disassembly of `AMDRSServ.exe`, all negative t
 - **Applied Configuration:**
   ```ini
   [SystemSettings]
+  r.FullScreenMode=1
   r.HDR.EnableHDROutput=1
   r.HDR.Display.MaxLuminance=1000
   r.HDR.Display.MidLuminance=20
@@ -91,3 +92,13 @@ Following live testing and binary disassembly of `AMDRSServ.exe`, all negative t
 - **GameUserSettings Alignment:**  
   `bUseHDRDisplayOutput=True` and `FullscreenMode=1` (Borderless Windowed).
 - **Benefit:** The game launches directly in 10-bit HDR borderless mode from frame 1, avoiding mid-game swapchain format changes that previously caused AMF DirectML/ONNX deadlocks.
+
+---
+
+## 6. Critical Operational Protocol: Recording & HDR
+
+> [!IMPORTANT]
+> **Set HDR and Window Mode BEFORE starting the recording!**  
+> Dynamic swapchain destruction mid-recording (switching 8-bit SDR $\leftrightarrow$ 10-bit HDR while actively writing to an MP4 container) causes capture pipelines to lose surface handles (`DXGI_ERROR_ACCESS_LOST`).
+> 
+> If HDR is already turned ON in Windows or game settings before you press `Ctrl+Shift+E`, the AMF encoder initializes directly for 10-bit HDR from frame 1 with no mid-stream reconstruction, and recording works seamlessly.
