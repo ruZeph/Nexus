@@ -3,10 +3,12 @@
     Registers the boot and logon telemetry tasks to comprehensively record system startup.
 #>
 
-$root = Split-Path -Parent $PSScriptRoot
-$vbs = "$root\scripts\run-hidden.vbs"
-$sysScript = "$root\scripts\diagnostics\boot-system-trace.ps1"
-$userScript = "$root\scripts\diagnostics\boot-user-trace.ps1"
+# $PSScriptRoot is ...\powershell\amd-radeon-overlay-fix\scripts\install
+# We need the section root: ...\powershell\amd-radeon-overlay-fix
+$sectionRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$vbs = "$sectionRoot\scripts\run-hidden.vbs"
+$sysScript = "$sectionRoot\scripts\diagnostics\boot-system-trace.ps1"
+$userScript = "$sectionRoot\scripts\diagnostics\boot-user-trace.ps1"
 
 # 1. System Boot Task (Runs at machine startup as SYSTEM)
 $taskSysName = "Boot-Telemetry-System"
@@ -17,7 +19,7 @@ $sysTrigger = New-ScheduledTaskTrigger -AtStartup
 $sysPrincipal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 
 Register-ScheduledTask -TaskName $taskSysName -Action $sysAction -Trigger $sysTrigger -Principal $sysPrincipal | Out-Null
-Write-Output "[OK] Registered $taskSysName (Trigger: AtStartup, RunLevel: Highest, User: SYSTEM)"
+Write-Output "[OK] Registered $taskSysName -> $sysScript"
 
 # 2. User Logon Task (Runs at user logon as Interactive User)
 $taskUserName = "Boot-Telemetry-User"
@@ -28,6 +30,4 @@ $userTrigger = New-ScheduledTaskTrigger -AtLogOn
 $userPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
 
 Register-ScheduledTask -TaskName $taskUserName -Action $userAction -Trigger $userTrigger -Principal $userPrincipal | Out-Null
-Write-Output "[OK] Registered $taskUserName (Trigger: AtLogOn, RunLevel: Highest, User: $env:USERNAME)"
-
-Write-Output "`nBoth telemetry tasks are primed and ready for your reboot."
+Write-Output "[OK] Registered $taskUserName -> $vbs $userScript"
