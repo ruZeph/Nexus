@@ -1,0 +1,58 @@
+{
+  "SOFTWARE\\Microsoft\\WindowsRuntime\\ActivatableClassId\\Windows.Gaming.GameBar.PresenceServer.Internal.PresenceWriter": {
+    "ActivationType": {
+      "val": 1,
+      "type": 4
+    },
+    "Server": {
+      "val": "Windows.Gaming.GameBar.Internal.PresenceWriterServer",
+      "type": 1
+    },
+    "TrustLevel": {
+      "val": 0,
+      "type": 4
+    }
+  },
+  "SOFTWARE\\Microsoft\\WindowsRuntime\\Server\\Windows.Gaming.GameBar.Internal.PresenceWriterServer": {
+    "ExePath": {
+      "val": "C:\\Windows\\System32\\GameBarPresenceWriter.exe",
+      "type": 1
+    },
+    "IdentityType": {
+      "val": 0,
+      "type": 4
+    },
+    "ServerType": {
+      "val": 0,
+      "type": 4
+    }
+  },
+  "SOFTWARE\\WOW6432Node\\Microsoft\\WindowsRuntime\\ActivatableClassId\\Windows.Gaming.GameBar.PresenceServer.Internal.PresenceWriter": {
+    "ActivationType": {
+      "val": 1,
+      "type": 4
+    },
+    "Server": {
+      "val": "Windows.Gaming.GameBar.Internal.PresenceWriterServer",
+      "type": 1
+    },
+    "TrustLevel": {
+      "val": 0,
+      "type": 4
+    }
+  },
+  "SOFTWARE\\WOW6432Node\\Microsoft\\WindowsRuntime\\Server\\Windows.Gaming.GameBar.Internal.PresenceWriterServer": {
+    "ExePath": {
+      "val": "C:\\Windows\\SysWOW64\\GameBarPresenceWriter.exe",
+      "type": 1
+    },
+    "IdentityType": {
+      "val": 0,
+      "type": 4
+    },
+    "ServerType": {
+      "val": 0,
+      "type": 4
+    }
+  }
+}
