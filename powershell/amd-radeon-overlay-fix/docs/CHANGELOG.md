@@ -264,3 +264,32 @@ recommended in README section 8 has still not been tried.
 ### K5. Deliberately NOT changed
 `AchievementsAutoStart` / `Achievements.exe` — confirmed **not** an issue; left alone as requested.
 (Note: it does still spawn `fastlist.exe` + `conhost` every 12 s, which can flash a console.)
+
+
+---
+
+## L. 2026-11-08 — Permanent Immunization (SFC, Windows Updates & ADLX Stabilization)
+
+Addressing permanent stability so fixes survive `sfc /scannow`, DISM repairs, and Windows Cumulative Updates without needing manual re-intervention.
+
+### L1. FanControl ADLX Disabling (eliminated 147 `AMDADLXServ.exe` crashes)
+- Diagnosed 147 chronic crashes in `AMDADLXServ.exe` (`0xc0000005` in `OLEAUT32.dll+0x153bf` on NULL pointer dereference).
+- Root cause: `FanControl.Service.exe` had `"AdlxWrapperSettings": { "Enabled": true }`. On this RDNA4 / RX 9060 XT GPU, FanControl's ADLX sensor queries repeatedly failed (`Sensor validation failed: ADLX sensors missing`). FanControl already monitors GPU temperatures natively via `LibreHardwareMonitorLib.dll`.
+- Fix: Set `"AdlxWrapperSettings": { "Enabled": false }` in `C:\Program Files (x86)\FanControl\Configurations\userConfig.json` (backed up to `.bak`). Service restarted.
+- Result: **0** ADLX crashes; FanControl GPU temperature and fan curve monitoring completely preserved.
+
+### L2. Group Policy & IFEO Immunization against `GameBarPresenceWriter`
+- Problem: Renaming `GameBarPresenceWriter.exe` was repeatedly undone by `sfc /scannow` and Windows Cumulative Updates (which restore genuine files from WinSxS).
+- Fix applied:
+  1. **Group Policy - DisallowRun**: `HKLM` and `HKCU` policies set `DisallowRun = 1`, blocking `GameBarPresenceWriter.exe` and `GameBarFTServer.exe`.
+  2. **Group Policy - GameDVR**: `AllowGameDVR = 0` and `AllowGameStream = 0` set in `HKLM` and `HKCU`.
+  3. **Group Policy - Software Restriction Policy**: Path rule registered under `HKLM\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers\0\Paths` blocking `GameBarPresenceWriter.exe`.
+  4. **Image File Execution Options (IFEO)**: Registered `Debugger = "systray.exe"` under `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\GameBarPresenceWriter.exe` and `WOW6432Node` (also for `GameBarFTServer.exe`).
+- Result: Even if `sfc /scannow`, DISM, or a Windows Update restores the binary to `System32`, the Windows NT kernel loader intercepts execution and immediately exits. The binary can never run or hook DirectX/Vulkan game windows.
+
+### L3. AMD Logon Race Elimination (`StartCN` & `StartDVR` 15-second delays)
+- Both AMD startup tasks previously had `Delay: 0`, firing during the logon stampede before DWM and the interactive desktop session had stabilized.
+- Added a 15-second logon delay (`PT15S`) to both tasks so AMD Software initializes after the desktop shell is fully ready.
+
+### L4. Maintenance script created
+- Created `scripts/maintenance/apply-permanent-immunization.ps1` for easy reference and one-click re-application.
